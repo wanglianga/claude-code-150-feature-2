@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { api, getUser } from '../api.js'
-import { Card, Modal, Field, Badge, fmt, fmtTime, useToast, useMeta, CHANGE_TYPE } from '../ui.jsx'
+import { Card, Modal, Field, Badge, fmt, fmtTime, useToast, useMeta,
+  CHANGE_TYPE, COST_BEARING_SHORT } from '../ui.jsx'
 
 export default function Visas() {
   const toast = useToast()
@@ -9,12 +10,22 @@ export default function Visas() {
   const canCreate = ['ROLE_PM', 'ROLE_BUDGET', 'ROLE_KEEPER'].includes(user.role)
   const canConfirm = ['ROLE_PM', 'ROLE_BUDGET'].includes(user.role)
   const canClaim = user.role === 'ROLE_FINANCE'
+  // 发起变更追加领料：班组长/仓管/项目经理/预算员
+  const canAdd = ['ROLE_FOREMAN', 'ROLE_KEEPER', 'ROLE_PM', 'ROLE_BUDGET'].includes(user.role)
 
   const [rows, setRows] = useState([])
   const [show, setShow] = useState(false)
   const [f, setF] = useState({
     building: '1#楼', area: '', process: '', drawingNo: '', materialId: '', crewId: '',
     changeType: 'DESIGN', description: '', qtyChange: '', unitPrice: '', claimAmount: ''
+  })
+  // 追加领料弹窗
+  const [addVisa, setAddVisa] = useState(null)
+  const [ctx, setCtx] = useState(null)
+  const blankLine = () => ({ materialId: '', applyQty: '' })
+  const [af, setAf] = useState({
+    crewId: '', costBearing: 'VISA_CLAIM', laborQty: '', laborPrice: 200, remark: '',
+    items: [blankLine()]
   })
 
   const load = () => api.get('/api/visas').then(setRows)
@@ -39,11 +50,52 @@ export default function Visas() {
     await api.put(`/api/visas/${v.id}/claim`, {}); toast('已标记索赔'); load()
   }
 
+  // 打开追加领料弹窗：拉取该变更关联的原预算/已领材料/现场库存/已有追加
+  const openAdd = async (v) => {
+    try {
+      const data = await api.get(`/api/visas/${v.id}/additional-context`)
+      setAddVisa(v); setCtx(data)
+      setAf({
+        crewId: v.crewId ? String(v.crewId) : (user.crewId ? String(user.crewId) : ''),
+        costBearing: 'DESIGN' === v.changeType ? 'VISA_CLAIM' : 'REWORK',
+        laborQty: '', laborPrice: 200,
+        remark: `${v.description ? v.description.slice(0, 40) : ''}，追加材料与人工`,
+        items: [{ materialId: v.materialId ? String(v.materialId) : '', applyQty: v.qtyChange > 0 ? String(v.qtyChange) : '' }]
+      })
+    } catch (e) { toast(e.message, 'err') }
+  }
+
+  const submitAdd = async () => {
+    if (!af.crewId) return toast('请选择追加领料班组', 'err')
+    const items = af.items.filter((i) => i.materialId && i.applyQty)
+    if (!items.length) return toast('请至少填写一条追加材料', 'err')
+    try {
+      await api.post('/api/requisitions/additional', {
+        visaId: addVisa.id,
+        crewId: Number(af.crewId),
+        building: addVisa.building,
+        area: addVisa.area,
+        process: addVisa.process,
+        drawingNo: addVisa.drawingNo,
+        costBearing: af.costBearing,
+        extraLaborQty: af.laborQty === '' ? 0 : Number(af.laborQty),
+        extraLaborPrice: af.laborPrice === '' ? 0 : Number(af.laborPrice),
+        remark: af.remark,
+        items: items.map((i) => ({ materialId: Number(i.materialId), applyQty: Number(i.applyQty) }))
+      })
+      toast('追加领料已提交，等待项目经理审核')
+      setAddVisa(null); setCtx(null); load()
+    } catch (e) { toast(e.message, 'err') }
+  }
+
+  // 弹窗内人工金额预估
+  const laborEstimate = (Number(af.laborQty) || 0) * (Number(af.laborPrice) || 0)
+
   const total = rows.filter((v) => v.status !== 'DRAFT').reduce((s, v) => s + (v.claimAmount || 0), 0)
 
   return (
     <Card title={`变更签证（已确认索赔 ${fmt(total)} 元）`}
-          hint="施工/设计变更引起的材料增减与费用，串联退库、损耗与财务变更索赔"
+          hint="施工/设计变更引起的材料增减与费用；防水班组可据签证发起追加领料（卷材+人工），项目经理审核后发料并绑定变更编号"
           actions={canCreate && <button className="btn primary" onClick={() => setShow(true)}>＋ 登记变更签证</button>}
           flush>
       <div className="table-scroll">
@@ -69,8 +121,11 @@ export default function Visas() {
                 <td className="desc-cell">{v.description}</td>
                 <td style={{ fontSize: 12 }}>{fmtTime(v.createdTime)}<div className="muted">{fmtTime(v.confirmTime)}</div></td>
                 <td>
-                  {v.status === 'DRAFT' && canConfirm && <button className="btn sm primary" onClick={() => confirm(v)}>确认</button>}
-                  {v.status === 'CONFIRMED' && canClaim && <button className="btn sm" onClick={() => claim(v)}>标记索赔</button>}
+                  <div className="btn-row">
+                    {v.status === 'DRAFT' && canConfirm && <button className="btn sm primary" onClick={() => confirm(v)}>确认</button>}
+                    {v.status === 'CONFIRMED' && canClaim && <button className="btn sm" onClick={() => claim(v)}>标记索赔</button>}
+                    {canAdd && <button className="btn sm" onClick={() => openAdd(v)}>追加领料</button>}
+                  </div>
                   {v.status === 'CLAIMED' && <span className="muted" style={{ fontSize: 12 }}>已索赔</span>}
                 </td>
               </tr>
@@ -114,7 +169,110 @@ export default function Visas() {
           </div>
           <Field label="变更说明"><textarea rows={3} value={f.description}
             onChange={(e) => setF({ ...f, description: e.target.value })}
-            placeholder="例：地下室后浇带设计变更，附加层范围扩大，增加卷材并产生拆除损耗" /></Field>
+            placeholder="例：设计临时调整卫生间防水高度，淋浴区上翻由 300mm 加高至 1.8m，追加卷材并产生防水人工" /></Field>
+        </Modal>
+      )}
+
+      {/* 变更追加领料 */}
+      {addVisa && ctx && (
+        <Modal title={`发起变更追加领料 · ${addVisa.code}`} wide onClose={() => { setAddVisa(null); setCtx(null) }}
+               footer={<><button className="btn" onClick={() => { setAddVisa(null); setCtx(null) }}>取消</button>
+                 <button className="btn primary" onClick={submitAdd}>提交追加（送项目经理审核）</button></>}>
+          <div className="kpi-note" style={{ marginBottom: 10 }}>
+            <Badge status="DRAFT" label={CHANGE_TYPE[addVisa.changeType]} tone="blue" />{' '}
+            {addVisa.building} {addVisa.area} · {addVisa.process} · {addVisa.drawingNo}
+            <div style={{ marginTop: 6 }}>{addVisa.description}</div>
+          </div>
+
+          {/* 平台关联：原预算 / 已领材料 / 现场库存 */}
+          <div className="grid3" style={{ marginBottom: 10 }}>
+            {ctx.budgets.map((b) => (
+              <div key={b.id} className="kpi-note">
+                原预算：<b>{b.materialName}</b> {fmt(b.budgetQty)} {b.unit}
+                <div className="muted" style={{ fontSize: 12 }}>预算单价 {fmt(b.budgetPrice)} 元</div>
+              </div>
+            ))}
+            {ctx.issued.map((i) => (
+              <div key={i.materialId} className="kpi-note">
+                已领材料：<b>{i.materialName}</b> {fmt(i.issuedQty)} {i.unit}
+                <div className="muted" style={{ fontSize: 12 }}>合同内已发金额 {fmt(i.issuedAmount)} 元</div>
+              </div>
+            ))}
+            <div className="kpi-note">
+              现场库存（{meta.materials.find((x) => x.id === addVisa.materialId)?.name || '—'}）
+              ：<b>{fmt(ctx.onHandQty)}</b>
+              <div className="muted" style={{ fontSize: 12 }}>{ctx.batches.length} 个可用批次</div>
+            </div>
+          </div>
+
+          {ctx.additions.length > 0 && (
+            <div className="kpi-note" style={{ marginBottom: 10 }}>
+              已有追加领料：{ctx.additions.map((a) =>
+                `${a.code}(${a.status}/${COST_BEARING_SHORT[a.costBearing] || a.costBearing})`).join('，')}
+            </div>
+          )}
+
+          <div className="grid3">
+            <Field label="追加班组 *">
+              <select value={af.crewId} disabled={user.role === 'ROLE_FOREMAN'}
+                      onChange={(e) => setAf({ ...af, crewId: e.target.value })}>
+                <option value="">请选择</option>
+                {meta.crews.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </Field>
+            <Field label="成本归属 *">
+              <select value={af.costBearing} onChange={(e) => setAf({ ...af, costBearing: e.target.value })}>
+                <option value="VISA_CLAIM">{COST_BEARING_SHORT.VISA_CLAIM}</option>
+                <option value="REWORK">{COST_BEARING_SHORT.REWORK}</option>
+              </select>
+            </Field>
+            <Field label="追加人工（工日 × 单价）">
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input type="number" placeholder="工日" value={af.laborQty}
+                  onChange={(e) => setAf({ ...af, laborQty: e.target.value })} />
+                <input type="number" placeholder="单价" value={af.laborPrice}
+                  onChange={(e) => setAf({ ...af, laborPrice: e.target.value })} />
+              </div>
+            </Field>
+          </div>
+
+          <div style={{ margin: '10px 0 6px', fontWeight: 600 }}>新增材料需求</div>
+          <table className="tbl">
+            <thead><tr><th>材料</th><th style={{ width: 160 }}>追加数量</th><th style={{ width: 70 }}></th></tr></thead>
+            <tbody>
+            {af.items.map((it, idx) => (
+              <tr key={idx}>
+                <td>
+                  <select value={it.materialId} onChange={(e) => {
+                    const items = af.items.slice()
+                    items[idx] = { ...items[idx], materialId: e.target.value }
+                    setAf({ ...af, items })
+                  }}>
+                    <option value="">请选择材料</option>
+                    {meta.materials.map((m) => <option key={m.id} value={m.id}>[{m.category}] {m.name}（{m.unit}）</option>)}
+                  </select>
+                </td>
+                <td><input type="number" value={it.applyQty} onChange={(e) => {
+                  const items = af.items.slice()
+                  items[idx] = { ...items[idx], applyQty: e.target.value }
+                  setAf({ ...af, items })
+                }} /></td>
+                <td>{af.items.length > 1 && (
+                  <button className="btn sm danger" onClick={() => setAf({ ...af, items: af.items.filter((_, i) => i !== idx) })}>删</button>
+                )}</td>
+              </tr>
+            ))}
+            </tbody>
+          </table>
+          <button className="btn" style={{ marginTop: 10 }}
+                  onClick={() => setAf({ ...af, items: [...af.items, blankLine()] })}>＋ 增加材料</button>
+
+          <Field label="追加说明"><input value={af.remark} onChange={(e) => setAf({ ...af, remark: e.target.value })} /></Field>
+          <div className="kpi-note" style={{ marginTop: 8 }}>
+            追加人工费预估：<b>{fmt(laborEstimate)}</b> 元；
+            提交后由项目经理审核，审核通过仓管发料，新增材料与人工将按"
+            <b>{COST_BEARING_SHORT[af.costBearing]}</b>"口径进入月底核算。
+          </div>
         </Modal>
       )}
     </Card>

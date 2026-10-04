@@ -8,6 +8,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/visas")
@@ -22,6 +23,12 @@ public class ChangeVisaController {
     @GetMapping
     public List<ChangeVisa> list() {
         return service.list();
+    }
+
+    /** 追加领料上下文：关联的原预算、已领材料、现场库存与已有追加单 */
+    @GetMapping("/{id}/additional-context")
+    public Map<String, Object> additionalContext(@PathVariable Long id) {
+        return service.additionalContext(id);
     }
 
     @PostMapping

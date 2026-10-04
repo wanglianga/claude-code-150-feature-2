@@ -204,4 +204,159 @@ class MaterialFlowIntegrationTest {
         // 12. 无 token 访问受保护接口 401
         mvc.perform(get("/api/inventory")).andExpect(status().isUnauthorized());
     }
+
+    /**
+     * 设计临时调整卫生间防水高度：追加卷材+人工 -> 关联设计变更/原预算/已领材料 ->
+     * 项目经理审核 -> 仓管发料并绑定变更编号 -> 月底财务区分合同内成本/签证成本/班组返工成本。
+     */
+    @Test
+    void changeAdditionalRequisitionBoundToVisaAndCostSplit() throws Exception {
+        String pm = token("pm", "pm123");
+        String keeper = token("keeper", "keeper123");
+        String finance = token("finance", "finance123");
+        String foreman4 = token("foreman4", "foreman123"); // 防水班 赵磊
+
+        // 1. 防水班待项目经理审核的追加领料（卷材 120 ㎡ + 8 工日，快照原预算 180/已领 180）
+        JsonNode submitted = om.readTree(mvc.perform(get("/api/requisitions?status=SUBMITTED")
+                        .header("Authorization", "Bearer " + keeper))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8));
+        long addId = -1;
+        for (JsonNode r : submitted) {
+            if (r.get("changeAdditional").asBoolean() && "VISA_CLAIM".equals(r.get("costBearing").asText())) {
+                addId = r.get("id").asLong();
+                assertEquals("QZ20261003002", r.get("visaCode").asText());
+                assertEquals(180d, r.get("items").get(0).get("budgetQty").asDouble(), 0.01);
+                assertEquals(180d, r.get("items").get(0).get("alreadyIssuedQty").asDouble(), 0.01);
+                assertEquals(1600d, r.get("extraLaborAmount").asDouble(), 0.01);
+            }
+        }
+        assertTrue(addId > 0, "应存在卫生间防水设计变更的待审核追加领料");
+
+        // 2. 未经项目经理审核，仓管发料应被拒绝
+        JsonNode addPre = om.readTree(mvc.perform(get("/api/requisitions/" + addId + "/precheck")
+                        .header("Authorization", "Bearer" + " " + keeper))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8));
+        long addItem = addPre.get("checks").get(0).get("itemId").asLong();
+        long addBatch = addPre.get("checks").get(0).get("batches").get(0).get("batchId").asLong();
+        mvc.perform(put("/api/requisitions/" + addId + "/issue")
+                        .header("Authorization", "Bearer " + keeper)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("items",
+                                List.of(Map.of("itemId", addItem, "batchId", addBatch, "issuedQty", 120d))))))
+                .andExpect(status().isBadRequest());
+
+        // 3. 班组长无权审核追加领料
+        mvc.perform(put("/api/requisitions/" + addId + "/approve")
+                        .header("Authorization", "Bearer " + foreman4))
+                .andExpect(status().isForbidden());
+
+        // 4. 项目经理审核通过
+        mvc.perform(put("/api/requisitions/" + addId + "/approve")
+                        .header("Authorization", "Bearer " + pm)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("remark", "同意按设计变更追加，列入对甲方签证"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("APPROVED"))
+                .andExpect(jsonPath("$.approvedBy").value("张项目"));
+
+        // 5. 仓管发料：新增材料与变更编号绑定，成本进入签证索赔清单
+        JsonNode issueRes = om.readTree(mvc.perform(put("/api/requisitions/" + addId + "/issue")
+                        .header("Authorization", "Bearer " + keeper)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("items",
+                                List.of(Map.of("itemId", addItem, "batchId", addBatch, "issuedQty", 120d))))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals("ISSUED", issueRes.get("requisition").get("status").asText());
+        String warnings = issueRes.get("warnings").toString();
+        assertTrue(warnings.contains("QZ20261003002") && warnings.contains("签证"),
+                "发料后应提示已绑定变更编号并进入签证索赔: " + warnings);
+
+        // 6. 防水班还可直接基于地下室变更签证发起追加（材料+人工）；非法成本归属被拒
+        JsonNode visas = om.readTree(mvc.perform(get("/api/visas").header("Authorization", "Bearer " + foreman4))
+                .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8));
+        long basementVisa = -1;
+        for (JsonNode v : visas) if ("QZ20261002001".equals(v.get("code").asText())) basementVisa = v.get("id").asLong();
+        long newAddId = om.readTree(mvc.perform(post("/api/requisitions/additional")
+                        .header("Authorization", "Bearer " + foreman4)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of(
+                                "visaId", basementVisa, "crewId", 4,
+                                "building", "1#楼", "area", "地下室", "process", "防水工程",
+                                "drawingNo", "建防-201", "costBearing", "VISA_CLAIM",
+                                "extraLaborQty", 2d, "extraLaborPrice", 200d,
+                                "items", List.of(Map.of("materialId", 3, "applyQty", 50d))))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.changeAdditional").value(true))
+                .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8))
+                .get("id").asLong();
+        assertEquals("SUBMITTED", om.readTree(mvc.perform(get("/api/requisitions/" + newAddId)
+                        .header("Authorization", "Bearer " + keeper))
+                .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8))
+                .get("status").asText());
+        mvc.perform(post("/api/requisitions/additional")
+                        .header("Authorization", "Bearer " + foreman4)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of(
+                                "visaId", basementVisa, "crewId", 4,
+                                "building", "1#楼", "process", "防水工程", "costBearing", "UNKNOWN",
+                                "items", List.of(Map.of("materialId", 3, "applyQty", 1d))))))
+                .andExpect(status().isBadRequest());
+
+        // 7. 追加领料上下文：平台关联原预算 180、已领 180、现场库存与已有追加单
+        JsonNode ctx = om.readTree(mvc.perform(get("/api/visas")
+                        .header("Authorization", "Bearer " + pm))
+                .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8));
+        long toiletVisa = -1;
+        for (JsonNode v : ctx) if ("QZ20261003002".equals(v.get("code").asText())) toiletVisa = v.get("id").asLong();
+        JsonNode context = om.readTree(mvc.perform(get("/api/visas/" + toiletVisa + "/additional-context")
+                        .header("Authorization", "Bearer " + pm))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals(180d, context.get("budgets").get(0).get("budgetQty").asDouble(), 0.01);
+        assertEquals(180d, context.get("issued").get(0).get("issuedQty").asDouble(), 0.01);
+        assertTrue(context.get("additions").size() >= 1);
+
+        // 8. 月底防水班（crewId=4）核算：合同内 / 签证 / 返工 成本三分
+        JsonNode st4 = om.readTree(mvc.perform(post("/api/settlements/generate")
+                        .header("Authorization", "Bearer " + finance)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("period", "2026-10", "crewId", 4))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8));
+        // 合同内：卷材 (300+180)*32 + 安全网 30*45 - 完好退库 20*32 = 16070
+        assertEquals(16070d, st4.get("contractCostAmount").asDouble(), 0.01);
+        // 签证追加：120*32 卷材 + 8*200 人工 = 5440
+        assertEquals(5440d, st4.get("visaCostAmount").asDouble(), 0.01);
+        // 施工返工追加：30*32 + 2*200 = 1360，计入责任班组扣款
+        assertEquals(1360d, st4.get("reworkCostAmount").asDouble(), 0.01);
+        assertEquals(1360d, st4.get("deductionAmount").asDouble(), 0.01);
+        // 签证索赔口径：6400(后浇带) + 5440(卫生间加高) + 0(返工不可签证)
+        assertEquals(11840d, st4.get("claimAmount").asDouble(), 0.01);
+
+        // 9. 财务总览：直接区分合同内成本、签证成本与班组返工成本
+        JsonNode fin = om.readTree(mvc.perform(get("/api/analytics/finance")
+                        .header("Authorization", "Bearer " + finance))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals(5440d, fin.get("visaBoundCostTotal").asDouble(), 0.01);
+        assertEquals(1360d, fin.get("reworkBoundCostTotal").asDouble(), 0.01);
+        boolean visaRowOk = false, reworkRowOk = false;
+        for (JsonNode v : fin.get("visas")) {
+            if ("QZ20261003002".equals(v.get("code").asText())) {
+                assertEquals(5440d, v.get("boundMaterialCost").asDouble() + v.get("boundLaborCost").asDouble(), 0.01);
+                assertEquals(5440d, v.get("visaClaimCost").asDouble(), 0.01);
+                assertTrue(v.get("bound").asBoolean());
+                visaRowOk = true;
+            }
+            if ("QZ20261003003".equals(v.get("code").asText())) {
+                assertEquals(1360d, v.get("reworkCost").asDouble(), 0.01);
+                assertEquals(0d, v.get("visaClaimCost").asDouble(), 0.01);
+                reworkRowOk = true;
+            }
+        }
+        assertTrue(visaRowOk && reworkRowOk, "财务签证台账应同时呈现签证成本与返工成本拆分");
+    }
 }

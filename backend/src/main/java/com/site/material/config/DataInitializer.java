@@ -119,6 +119,8 @@ public class DataInitializer implements CommandLineRunner {
         budget("1#楼", "A区", "主体结构", "结施-101", m8, 30, 28, c1);
         budget("1#楼", "地下室", "防水工程", "建防-201", m3, 2600, 32, c4);
         budget("1#楼", "地下室", "防水工程", "建防-201", m9, 100, 45, c4);
+        // 卫生间防水：原设计淋浴区上翻 300mm，预算 180 ㎡（后被设计变更加高至 1.8m）
+        budget("1#楼", "卫生间", "卫生间防水", "建防-208", m3, 180, 32, c4);
         budget("1#楼", "标准层", "墙地砖铺贴", "建装-305", m4, 150, 58, c3);
         budget("1#楼", "标准层", "砌筑抹灰", "建施-301", m5, 60, 380, c2);
         budget("1#楼", "标准层", "机电预埋", "电施-401", m6, 2000, 3.5, c5);
@@ -168,6 +170,14 @@ public class DataInitializer implements CommandLineRunner {
         item(r8, m9, b9, 30, 30, 45);
         saveReq(r8);
 
+        // 卫生间防水：按原预算（上翻 300mm）已领 180 ㎡
+        Requisition r9 = requisition("LL20261002009", c4, "1#楼", "卫生间", "卫生间防水", "建防-208",
+                "ISSUED", false, "赵磊", "周材料", t(10, 2, 11), t(10, 2, 12));
+        item(r9, m3, b3, 180, 180, 32);
+        saveReq(r9);
+        b3.setQtyIssued(300d + 180d);
+        batchRepo.save(b3);
+
         // ---------- 待发料（含超预算、夜间紧急） ----------
         Requisition p1 = requisition("LL20261003009", c1, "1#楼", "A区", "主体结构", "结施-101",
                 "SUBMITTED", false, "王强", null, t(10, 3, 8), null);
@@ -205,6 +215,90 @@ public class DataInitializer implements CommandLineRunner {
         v1.setCreatedTime(t(10, 2, 13));
         v1.setConfirmTime(t(10, 2, 17));
         visaRepo.save(v1);
+
+        // 卫生间防水高度设计变更：淋浴区上翻由 300mm 调整为 1.8m，需追加卷材与防水人工，可向甲方签证
+        ChangeVisa v2 = new ChangeVisa();
+        v2.setCode("QZ20261003002");
+        v2.setBuilding("1#楼");
+        v2.setArea("卫生间");
+        v2.setProcess("卫生间防水");
+        v2.setDrawingNo("建防-208");
+        v2.setMaterialId(m3.getId());
+        v2.setCrewId(c4.getId());
+        v2.setChangeType("DESIGN");
+        v2.setDescription("设计临时调整卫生间防水高度：淋浴区墙面防水上翻由 300mm 加高至 1.8m，追加 SBS 卷材 120 ㎡及防水班组人工");
+        v2.setQtyChange(120d);
+        v2.setUnitPrice(32d);
+        v2.setClaimAmount(5440d); // 120*32 卷材 + 8 工日*200 人工
+        v2.setStatus("CONFIRMED");
+        v2.setApplicant("赵磊");
+        v2.setConfirmer("张项目");
+        v2.setCreatedTime(t(10, 3, 9));
+        v2.setConfirmTime(t(10, 3, 10));
+        visaRepo.save(v2);
+
+        // 防水班组据此发起追加领料（卷材 120 ㎡ + 8 工日人工），成本可签证，待项目经理审核
+        Requisition a1 = requisition("LZ20261003001", c4, "1#楼", "卫生间", "卫生间防水", "建防-208",
+                "SUBMITTED", false, "赵磊", null, t(10, 3, 11), null);
+        a1.setChangeAdditional(true);
+        a1.setVisaId(v2.getId());
+        a1.setCostBearing("VISA_CLAIM");
+        a1.setExtraLaborQty(8d);
+        a1.setExtraLaborPrice(200d);
+        a1.setRemark("卫生间防水上翻加高，追加卷材 120 ㎡、防水工 8 工日，凭设计变更向甲方签证");
+        RequisitionItem ai1 = new RequisitionItem();
+        ai1.setRequisition(a1);
+        ai1.setMaterialId(m3.getId());
+        ai1.setApplyQty(120d);
+        ai1.setBudgetQty(180d);
+        ai1.setAlreadyIssuedQty(180d);
+        a1.getItems().add(ai1);
+        reqRepo.save(a1);
+
+        // 施工返工案例：防水班组局部起砂返工，追加卷材 30 ㎡+2 工日，PM 已审核、仓管已发料，成本计责任班组
+        ChangeVisa v3 = new ChangeVisa();
+        v3.setCode("QZ20261003003");
+        v3.setBuilding("2#楼");
+        v3.setArea("卫生间");
+        v3.setProcess("卫生间防水");
+        v3.setDrawingNo("建防-210");
+        v3.setMaterialId(m3.getId());
+        v3.setCrewId(c4.getId());
+        v3.setChangeType("CONSTRUCTION");
+        v3.setDescription("2#楼卫生间防水基层起砂返工，铲除重做，追加卷材与人工，属施工返工不可向甲方签证");
+        v3.setQtyChange(30d);
+        v3.setUnitPrice(32d);
+        v3.setClaimAmount(0d);
+        v3.setStatus("CONFIRMED");
+        v3.setApplicant("赵磊");
+        v3.setConfirmer("张项目");
+        v3.setCreatedTime(t(10, 3, 8));
+        v3.setConfirmTime(t(10, 3, 9));
+        visaRepo.save(v3);
+
+        Requisition a2 = requisition("LZ20261003002", c4, "2#楼", "卫生间", "卫生间防水", "建防-210",
+                "ISSUED", false, "赵磊", "周材料", t(10, 3, 9), t(10, 3, 14));
+        a2.setChangeAdditional(true);
+        a2.setVisaId(v3.getId());
+        a2.setCostBearing("REWORK");
+        a2.setExtraLaborQty(2d);
+        a2.setExtraLaborPrice(200d);
+        a2.setApprovedBy("张项目");
+        a2.setApprovedTime(t(10, 3, 12));
+        a2.setRemark("基层起砂返工，追加成本计入防水班组");
+        RequisitionItem ai2 = new RequisitionItem();
+        ai2.setRequisition(a2);
+        ai2.setMaterialId(m3.getId());
+        ai2.setApplyQty(30d);
+        ai2.setBudgetQty(0d);
+        ai2.setAlreadyIssuedQty(0d);
+        ai2.setBatchId(b3.getId());
+        ai2.setIssuedQty(30d);
+        ai2.setIssuePrice(32d);
+        a2.getItems().add(ai2);
+        reqRepo.save(a2);
+        b3.setQtyIssued(480d + 30d);
+        batchRepo.save(b3);
 
         // ---------- 退库 ----------
         MaterialReturn t1 = retDoc("TK20261002001", c5, r6.getId(), "1#楼", "标准层", "机电预埋",

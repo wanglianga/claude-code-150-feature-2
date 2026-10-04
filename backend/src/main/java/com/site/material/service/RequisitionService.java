@@ -25,16 +25,19 @@ public class RequisitionService {
     private final ProjectBudgetRepository budgetRepo;
     private final MaterialRepository materialRepo;
     private final CrewRepository crewRepo;
+    private final ChangeVisaRepository visaRepo;
     private final CodeGenerator codes;
 
     public RequisitionService(RequisitionRepository reqRepo, MaterialBatchRepository batchRepo,
                               ProjectBudgetRepository budgetRepo, MaterialRepository materialRepo,
-                              CrewRepository crewRepo, CodeGenerator codes) {
+                              CrewRepository crewRepo, ChangeVisaRepository visaRepo,
+                              CodeGenerator codes) {
         this.reqRepo = reqRepo;
         this.batchRepo = batchRepo;
         this.budgetRepo = budgetRepo;
         this.materialRepo = materialRepo;
         this.crewRepo = crewRepo;
+        this.visaRepo = visaRepo;
         this.codes = codes;
     }
 
@@ -62,6 +65,75 @@ public class RequisitionService {
             item.setMaterialId(it.materialId());
             item.setApplyQty(it.applyQty());
             r.getItems().add(item);
+        }
+        return reqRepo.save(r);
+    }
+
+    /**
+     * 变更追加领料：关联设计变更、原预算、已领材料与新增需求，提交后待项目经理审核。
+     * 成本归属：VISA_CLAIM 可向甲方签证（材料进索赔清单）；REWORK 施工返工（计责任班组）。
+     */
+    @Transactional
+    public Requisition createAdditional(AdditionalRequisitionRequest req) {
+        if (req.items() == null || req.items().isEmpty()) {
+            throw new BusinessException("追加材料明细不能为空");
+        }
+        ChangeVisa visa = visaRepo.findById(req.visaId())
+                .orElseThrow(() -> new BusinessException("设计变更不存在"));
+        crewRepo.findById(req.crewId()).orElseThrow(() -> new BusinessException("班组不存在"));
+        if (!"VISA_CLAIM".equals(req.costBearing()) && !"REWORK".equals(req.costBearing())) {
+            throw new BusinessException("成本归属只能是 VISA_CLAIM（签证索赔）或 REWORK（施工返工）");
+        }
+        Requisition r = new Requisition();
+        r.setCode(codes.next("LZ")); // 追加领料前缀
+        r.setCrewId(req.crewId());
+        r.setBuilding(req.building());
+        r.setArea(req.area());
+        r.setProcess(req.process());
+        r.setDrawingNo(req.drawingNo());
+        r.setChangeAdditional(true);
+        r.setVisaId(visa.getId());
+        r.setCostBearing(req.costBearing());
+        r.setExtraLaborQty(req.extraLaborQty() == null ? 0d : req.extraLaborQty());
+        r.setExtraLaborPrice(req.extraLaborPrice() == null ? 0d : req.extraLaborPrice());
+        r.setRemark(req.remark());
+        r.setApplicant(SecurityUtil.currentName());
+        r.setApplyTime(LocalDateTime.now());
+        r.setStatus("SUBMITTED");
+        // 明细写入原预算量/已领量快照，供项目经理审核时对照新增需求
+        for (AdditionalItemIn it : req.items()) {
+            materialRepo.findById(it.materialId())
+                    .orElseThrow(() -> new BusinessException("材料不存在"));
+            double budgetQty = budgetRepo.findByBuildingAndProcessAndMaterialId(
+                            r.getBuilding(), r.getProcess(), it.materialId()).stream()
+                    .filter(b -> b.getCrewId() == null || b.getCrewId().equals(r.getCrewId()))
+                    .mapToDouble(ProjectBudget::getBudgetQty).sum();
+            RequisitionItem item = new RequisitionItem();
+            item.setRequisition(r);
+            item.setMaterialId(it.materialId());
+            item.setApplyQty(it.applyQty());
+            item.setBudgetQty(MasterDataService.round(budgetQty));
+            item.setAlreadyIssuedQty(MasterDataService.round(issuedAlready(r, it.materialId())));
+            r.getItems().add(item);
+        }
+        return reqRepo.save(r);
+    }
+
+    /** 项目经理审核追加领料：通过后进入待发料（APPROVED），仓管按正常流程核对发料 */
+    @Transactional
+    public Requisition approve(Long id, String remark) {
+        Requisition r = reqRepo.findByIdWithItems(id).orElseThrow(() -> new BusinessException("领料单不存在"));
+        if (!r.isChangeAdditional()) {
+            throw new BusinessException("仅变更追加领料需要项目经理审核");
+        }
+        if (!"SUBMITTED".equals(r.getStatus())) {
+            throw new BusinessException("仅待审核的追加领料可审核，当前状态: " + r.getStatus());
+        }
+        r.setStatus("APPROVED");
+        r.setApprovedBy(SecurityUtil.currentName());
+        r.setApprovedTime(LocalDateTime.now());
+        if (remark != null) {
+            r.setRemark((r.getRemark() == null ? "" : r.getRemark() + "｜") + "PM审核:" + remark);
         }
         return reqRepo.save(r);
     }
@@ -123,8 +195,12 @@ public class RequisitionService {
     @Transactional
     public Map<String, Object> issue(Long id, IssueRequest req) {
         Requisition r = reqRepo.findByIdWithItems(id).orElseThrow(() -> new BusinessException("领料单不存在"));
-        if (!"SUBMITTED".equals(r.getStatus())) {
-            throw new BusinessException("仅待发料单据可执行发料，当前状态: " + r.getStatus());
+        boolean additional = r.isChangeAdditional();
+        String expected = additional ? "APPROVED" : "SUBMITTED";
+        if (!expected.equals(r.getStatus())) {
+            throw new BusinessException(additional
+                    ? "追加领料须经项目经理审核通过后才能发料，当前状态: " + r.getStatus()
+                    : "仅待发料单据可执行发料，当前状态: " + r.getStatus());
         }
         Map<Long, IssueItemIn> input = req.items().stream()
                 .collect(Collectors.toMap(IssueItemIn::itemId, Function.identity()));
@@ -156,19 +232,28 @@ public class RequisitionService {
             item.setIssuedQty(in.issuedQty());
             item.setIssuePrice(batch.getUnitPrice());
 
-            double already = issuedAlready(r, item.getMaterialId());
-            double budgetQty = budgetRepo.findByBuildingAndProcessAndMaterialId(
-                            r.getBuilding(), r.getProcess(), item.getMaterialId()).stream()
-                    .filter(b -> b.getCrewId() == null || b.getCrewId().equals(r.getCrewId()))
-                    .mapToDouble(ProjectBudget::getBudgetQty).sum();
-            if (budgetQty > 0 && already + in.issuedQty() > budgetQty + 1e-9 && !r.isUrgent()) {
-                warnings.add("材料 " + item.getMaterialId() + " 累计领用已超预算，需补办审批");
+            // 追加领料已经项目经理审核（授权超原预算），不再给超预算预警
+            if (!additional && !r.isUrgent()) {
+                double already = issuedAlready(r, item.getMaterialId());
+                double budgetQty = budgetRepo.findByBuildingAndProcessAndMaterialId(
+                                r.getBuilding(), r.getProcess(), item.getMaterialId()).stream()
+                        .filter(b -> b.getCrewId() == null || b.getCrewId().equals(r.getCrewId()))
+                        .mapToDouble(ProjectBudget::getBudgetQty).sum();
+                if (budgetQty > 0 && already + in.issuedQty() > budgetQty + 1e-9) {
+                    warnings.add("材料 " + item.getMaterialId() + " 累计领用已超预算，需补办审批");
+                }
             }
         }
         r.setStatus("ISSUED");
         r.setIssuedBy(SecurityUtil.currentName());
         r.setConfirmedBy(r.getApplicant()); // 班组长确认领用
         r.setIssueTime(LocalDateTime.now());
+        if (additional && r.getVisaId() != null) {
+            warnings.add(0, "追加领料已与变更编号 " + visaCode(r.getVisaId()) + " 绑定，"
+                    + ("VISA_CLAIM".equals(r.getCostBearing())
+                            ? "材料与人工成本进入签证索赔清单"
+                            : "材料与人工成本计入责任班组（施工返工）"));
+        }
         if (req.remark() != null) {
             r.setRemark(req.remark());
         }
@@ -177,6 +262,10 @@ public class RequisitionService {
         out.put("requisition", view(r));
         out.put("warnings", warnings);
         return out;
+    }
+
+    private String visaCode(Long visaId) {
+        return visaRepo.findById(visaId).map(ChangeVisa::getCode).orElse(String.valueOf(visaId));
     }
 
     @Transactional
@@ -213,6 +302,8 @@ public class RequisitionService {
                 .collect(Collectors.toMap(Crew::getId, Crew::getName));
         Map<Long, String> batchNos = batchRepo.findAll().stream()
                 .collect(Collectors.toMap(MaterialBatch::getId, MaterialBatch::getBatchNo));
+        Map<Long, ChangeVisa> visas = visaRepo.findAll().stream()
+                .collect(Collectors.toMap(ChangeVisa::getId, v -> v));
 
         List<Map<String, Object>> items = r.getItems().stream().map(i -> {
             Map<String, Object> x = new LinkedHashMap<>();
@@ -221,6 +312,8 @@ public class RequisitionService {
             x.put("materialName", matNames.get(i.getMaterialId()));
             x.put("unit", units.get(i.getMaterialId()));
             x.put("applyQty", i.getApplyQty());
+            x.put("budgetQty", i.getBudgetQty());
+            x.put("alreadyIssuedQty", i.getAlreadyIssuedQty());
             x.put("issuedQty", i.getIssuedQty());
             x.put("batchId", i.getBatchId());
             x.put("batchNo", i.getBatchId() == null ? null : batchNos.get(i.getBatchId()));
@@ -230,6 +323,11 @@ public class RequisitionService {
             return x;
         }).toList();
 
+        double materialAmount = items.stream()
+                .mapToDouble(x -> (double) x.get("amount")).sum();
+        double laborAmount = nz(r.getExtraLaborQty()) * nz(r.getExtraLaborPrice());
+
+        ChangeVisa visa = r.getVisaId() == null ? null : visas.get(r.getVisaId());
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", r.getId());
         m.put("code", r.getCode());
@@ -241,15 +339,29 @@ public class RequisitionService {
         m.put("drawingNo", r.getDrawingNo());
         m.put("status", r.getStatus());
         m.put("urgent", r.isUrgent());
+        m.put("changeAdditional", r.isChangeAdditional());
+        m.put("visaId", r.getVisaId());
+        m.put("visaCode", visa == null ? null : visa.getCode());
+        m.put("visaChangeType", visa == null ? null : visa.getChangeType());
+        m.put("costBearing", r.getCostBearing());
+        m.put("extraLaborQty", r.getExtraLaborQty());
+        m.put("extraLaborPrice", r.getExtraLaborPrice());
+        m.put("extraLaborAmount", MasterDataService.round(laborAmount));
         m.put("applicant", r.getApplicant());
+        m.put("approvedBy", r.getApprovedBy());
+        m.put("approvedTime", r.getApprovedTime());
         m.put("issuedBy", r.getIssuedBy());
         m.put("confirmedBy", r.getConfirmedBy());
         m.put("applyTime", r.getApplyTime());
         m.put("issueTime", r.getIssueTime());
         m.put("remark", r.getRemark());
         m.put("items", items);
-        m.put("totalAmount", MasterDataService.round(items.stream()
-                .mapToDouble(x -> (double) x.get("amount")).sum()));
+        m.put("materialAmount", MasterDataService.round(materialAmount));
+        m.put("totalAmount", MasterDataService.round(materialAmount + laborAmount));
         return m;
+    }
+
+    private static double nz(Double v) {
+        return v == null ? 0d : v;
     }
 }

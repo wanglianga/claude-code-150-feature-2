@@ -51,6 +51,13 @@ public class Settlement {
     /** 变更索赔金额（签证） */
     private Double claimAmount = 0d;
 
+    /** 合同内材料成本：普通领料的净消耗（不含变更追加） */
+    private Double contractCostAmount = 0d;
+    /** 可向甲方签证的变更追加材料成本（含追加人工，进入索赔清单，不扣班组） */
+    private Double visaCostAmount = 0d;
+    /** 施工返工的变更追加材料成本（含追加人工，计入责任班组） */
+    private Double reworkCostAmount = 0d;
+
     private String generatedBy;
     private String confirmedBy;
     private LocalDateTime createdTime;

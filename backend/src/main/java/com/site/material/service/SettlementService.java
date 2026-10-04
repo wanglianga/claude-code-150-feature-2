@@ -67,12 +67,25 @@ public class SettlementService {
                 .filter(b -> b.getCrewId() == null || b.getCrewId().equals(crewId))
                 .mapToDouble(b -> b.getBudgetQty() * b.getBudgetPrice()).sum();
 
-        // 实际领用
-        double issuedAmount = reqRepo.findIssuedByCrewBetween(crewId, from, to).stream()
-                .flatMap(r -> r.getItems().stream())
-                .mapToDouble(i -> nz(i.getIssuedQty()) * nz(i.getIssuePrice())).sum();
+        // 实际领用，按成本归属拆分：
+        //  普通领料 -> 合同内成本；变更追加 VISA_CLAIM -> 签证成本；变更追加 REWORK -> 班组返工成本
+        double issuedAmount = 0d, visaCostAmount = 0d, reworkCostAmount = 0d;
+        for (Requisition r : reqRepo.findIssuedByCrewBetween(crewId, from, to)) {
+            double material = r.getItems().stream()
+                    .mapToDouble(i -> nz(i.getIssuedQty()) * nz(i.getIssuePrice())).sum();
+            double labor = nz(r.getExtraLaborQty()) * nz(r.getExtraLaborPrice());
+            if (r.isChangeAdditional()) {
+                if ("REWORK".equals(r.getCostBearing())) {
+                    reworkCostAmount += material + labor;
+                } else {
+                    visaCostAmount += material + labor;
+                }
+            } else {
+                issuedAmount += material;
+            }
+        }
 
-        // 退库：GOOD 冲减消耗；DAMAGED 计入班组责任损耗
+        // 退库：GOOD 冲减合同内消耗；DAMAGED 计入班组责任损耗
         double returnedAmount = 0d;
         double damagedAmount = 0d;
         for (MaterialReturn r : returnRepo.findConfirmedByCrewBetween(crewId, from, to)) {
@@ -86,7 +99,9 @@ public class SettlementService {
             }
         }
 
-        double consumed = issuedAmount - returnedAmount;
+        // 合同内净消耗（变更追加材料不占用合同预算口径）
+        double contractConsumed = issuedAmount - returnedAmount;
+        double consumed = contractConsumed + visaCostAmount + reworkCostAmount;
 
         double crewWaste = 0d, supplierWaste = 0d, otherWaste = 0d;
         for (WasteRecord w : wasteRepo.findByCrewBetween(crewId, from, to)) {
@@ -103,11 +118,12 @@ public class SettlementService {
                 .filter(v -> !"DRAFT".equals(v.getStatus()))
                 .mapToDouble(v -> nz(v.getClaimAmount())).sum();
 
-        double variance = consumed - budgetAmount;
-        double deduction = crewWaste + Math.max(0d, variance);
+        // 偏差只比对合同内口径；施工返工的追加材料与人工计入责任班组扣款
+        double variance = contractConsumed - budgetAmount;
+        double deduction = crewWaste + Math.max(0d, variance) + reworkCostAmount;
 
         s.setBudgetAmount(r2(budgetAmount));
-        s.setIssuedAmount(r2(issuedAmount));
+        s.setIssuedAmount(r2(issuedAmount + visaCostAmount + reworkCostAmount));
         s.setReturnedAmount(r2(returnedAmount));
         s.setConsumedAmount(r2(consumed));
         s.setCrewWasteAmount(r2(crewWaste));
@@ -116,6 +132,9 @@ public class SettlementService {
         s.setVarianceAmount(r2(variance));
         s.setDeductionAmount(r2(deduction));
         s.setClaimAmount(r2(claim));
+        s.setContractCostAmount(r2(contractConsumed));
+        s.setVisaCostAmount(r2(visaCostAmount));
+        s.setReworkCostAmount(r2(reworkCostAmount));
         s.setStatus("DRAFT");
         s.setGeneratedBy(SecurityUtil.currentName());
         s.setCreatedTime(LocalDateTime.now());

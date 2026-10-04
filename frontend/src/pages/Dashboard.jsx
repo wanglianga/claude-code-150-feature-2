@@ -94,9 +94,10 @@ export default function Dashboard() {
             {user.role === 'ROLE_FINANCE' && <>
               <div>财务关注：供应商结算、班组扣款、变更索赔。</div>
               {finance && <div style={{ marginTop: 8 }}>
-                应付供应商 <b style={{ color: 'var(--brand-dark)' }}>{fmt(finance.supplierTotalPayable)} 元</b>，
-                班组扣款 <b style={{ color: 'var(--red)' }}>{fmt(finance.crewTotalDeduction)} 元</b>，
-                变更索赔 <b style={{ color: 'var(--blue)' }}>{fmt(finance.visaTotalClaim)} 元</b>。
+                合同内材料成本 <b style={{ color: 'var(--green)' }}>{fmt(finance.contractCostTotal)} 元</b>，
+                变更签证追加 <b style={{ color: 'var(--blue)' }}>{fmt(finance.visaCostTotal)} 元</b>，
+                施工返工计班组 <b style={{ color: 'var(--red)' }}>{fmt(finance.reworkCostTotal)} 元</b>，
+                班组扣款 <b style={{ color: 'var(--red)' }}>{fmt(finance.crewTotalDeduction)} 元</b>。
               </div>}
               <div className="btn-row" style={{ marginTop: 10 }}>
                 <button className="btn" onClick={() => go('/finance')}>财务结算与索赔</button>
@@ -104,9 +105,10 @@ export default function Dashboard() {
               </div>
             </>}
             {user.role === 'ROLE_FOREMAN' && <>
-              <div>班组长可提交领料申请（含夜间紧急）、办理退库，并查看本班组材料成本。</div>
+              <div>班组长可提交领料申请（含夜间紧急）、凭设计变更发起追加领料、办理退库，并查看本班组材料成本。</div>
               <div className="btn-row" style={{ marginTop: 10 }}>
                 <button className="btn primary" onClick={() => go('/requisitions')}>申请领料</button>
+                <button className="btn" onClick={() => go('/visas')}>变更追加领料</button>
                 <button className="btn" onClick={() => go('/returns')}>办理退库</button>
                 <button className="btn" onClick={() => go('/settlements')}>本班组核算</button>
               </div>

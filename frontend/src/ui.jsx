@@ -11,14 +11,21 @@ export const ROLE_LABEL = {
 }
 
 export const STATUS_LABEL = {
-  DRAFT: '草稿', SUBMITTED: '待处理', ISSUED: '已发料', REJECTED: '已驳回',
+  DRAFT: '草稿', SUBMITTED: '待处理', APPROVED: '已审核', ISSUED: '已发料', REJECTED: '已驳回',
   CONFIRMED: '已确认', CLAIMED: '已索赔', COUNTING: '盘点中', ADJUSTED: '已调账'
 }
 export const STATUS_TONE = {
-  DRAFT: 'gray', SUBMITTED: 'amber', ISSUED: 'green', REJECTED: 'red',
+  DRAFT: 'gray', SUBMITTED: 'amber', APPROVED: 'blue', ISSUED: 'green', REJECTED: 'red',
   CONFIRMED: 'green', CLAIMED: 'blue', COUNTING: 'amber', ADJUSTED: 'blue',
   PASSED: 'green', PENDING: 'amber', FAILED: 'red', CONDITIONAL: 'blue'
 }
+
+/** 变更追加领料的成本归属 */
+export const COST_BEARING = {
+  VISA_CLAIM: '可向甲方签证（进索赔清单）',
+  REWORK: '施工返工（计责任班组）'
+}
+export const COST_BEARING_SHORT = { VISA_CLAIM: '甲方签证', REWORK: '班组返工' }
 
 export const QC_LABEL = { PENDING: '待检', PASSED: '合格', FAILED: '不合格', CONDITIONAL: '让步接收' }
 export const WASTE_TYPE = {

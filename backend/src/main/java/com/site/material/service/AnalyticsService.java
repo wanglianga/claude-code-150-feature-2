@@ -316,12 +316,16 @@ public class AnalyticsService {
                 .collect(Collectors.toMap(Crew::getId, Crew::getName));
         List<Map<String, Object>> crewRows = new ArrayList<>();
         double totalDeduction = 0, totalClaim = 0;
+        double totalContractCost = 0, totalVisaCost = 0, totalReworkCost = 0;
         for (Settlement s : latestByCrew.values()) {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("crewId", s.getCrewId());
             row.put("crewName", crewNames.get(s.getCrewId()));
             row.put("period", s.getPeriod());
             row.put("consumedAmount", s.getConsumedAmount());
+            row.put("contractCostAmount", s.getContractCostAmount());
+            row.put("visaCostAmount", s.getVisaCostAmount());
+            row.put("reworkCostAmount", s.getReworkCostAmount());
             row.put("crewWasteAmount", s.getCrewWasteAmount());
             row.put("varianceAmount", s.getVarianceAmount());
             row.put("deductionAmount", s.getDeductionAmount());
@@ -330,10 +334,31 @@ public class AnalyticsService {
             crewRows.add(row);
             totalDeduction += nz(s.getDeductionAmount());
             totalClaim += nz(s.getClaimAmount());
+            totalContractCost += nz(s.getContractCostAmount());
+            totalVisaCost += nz(s.getVisaCostAmount());
+            totalReworkCost += nz(s.getReworkCostAmount());
         }
+
+        // 变更签证 -> 绑定的追加领料（发料后绑定）：实际材料成本 + 追加人工
+        Map<Long, List<Requisition>> reqByVisa = reqRepo.findAllWithItems().stream()
+                .filter(r -> r.isChangeAdditional() && r.getVisaId() != null)
+                .collect(Collectors.groupingBy(Requisition::getVisaId));
 
         // 变更签证索赔台账
         List<Map<String, Object>> visaRows = visaRepo.findAllByOrderByCreatedTimeDesc().stream().map(v -> {
+            double boundMaterial = 0d, boundLabor = 0d, reworkCost = 0d;
+            List<String> reqCodes = new ArrayList<>();
+            boolean allIssued = true;
+            for (Requisition r : reqByVisa.getOrDefault(v.getId(), List.of())) {
+                reqCodes.add(r.getCode());
+                if (!"ISSUED".equals(r.getStatus())) { allIssued = false; continue; }
+                double material = r.getItems().stream()
+                        .mapToDouble(i -> nz(i.getIssuedQty()) * nz(i.getIssuePrice())).sum();
+                double labor = nz(r.getExtraLaborQty()) * nz(r.getExtraLaborPrice());
+                boundMaterial += material;
+                boundLabor += labor;
+                if ("REWORK".equals(r.getCostBearing())) reworkCost += material + labor;
+            }
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("code", v.getCode());
             row.put("building", v.getBuilding());
@@ -341,10 +366,27 @@ public class AnalyticsService {
             row.put("changeType", v.getChangeType());
             row.put("description", v.getDescription());
             row.put("claimAmount", r2(nz(v.getClaimAmount())));
+            row.put("boundMaterialCost", r2(boundMaterial));
+            row.put("boundLaborCost", r2(boundLabor));
+            row.put("boundCostAmount", r2(boundMaterial + boundLabor));
+            row.put("visaClaimCost", r2(boundMaterial + boundLabor - reworkCost));
+            row.put("reworkCost", r2(reworkCost));
+            row.put("requisitionCodes", reqCodes);
+            row.put("bound", allIssued && !reqCodes.isEmpty());
             row.put("status", v.getStatus());
             row.put("createdTime", v.getCreatedTime());
             return row;
         }).toList();
+        // 已发料追加领料按成本归属汇总（财务月底直接区分：签证索赔 vs 班组返工）
+        double visaBoundCostTotal = 0d, reworkBoundCostTotal = 0d;
+        for (Requisition r : reqRepo.findAllWithItems()) {
+            if (!r.isChangeAdditional() || !"ISSUED".equals(r.getStatus())) continue;
+            double amt = r.getItems().stream()
+                    .mapToDouble(i -> nz(i.getIssuedQty()) * nz(i.getIssuePrice())).sum()
+                    + nz(r.getExtraLaborQty()) * nz(r.getExtraLaborPrice());
+            if ("REWORK".equals(r.getCostBearing())) reworkBoundCostTotal += amt;
+            else visaBoundCostTotal += amt;
+        }
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("supplierTotalInbound", r2(supplierRows.stream()
@@ -354,6 +396,11 @@ public class AnalyticsService {
         out.put("supplierQualityClaim", r2(supplierQualityClaim));
         out.put("crewTotalDeduction", r2(totalDeduction));
         out.put("visaTotalClaim", r2(totalClaim));
+        out.put("contractCostTotal", r2(totalContractCost));
+        out.put("visaCostTotal", r2(totalVisaCost));
+        out.put("reworkCostTotal", r2(totalReworkCost));
+        out.put("visaBoundCostTotal", r2(visaBoundCostTotal));
+        out.put("reworkBoundCostTotal", r2(reworkBoundCostTotal));
         out.put("suppliers", supplierRows);
         out.put("crews", crewRows);
         out.put("visas", visaRows);

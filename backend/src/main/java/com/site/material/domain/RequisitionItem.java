@@ -29,6 +29,12 @@ public class RequisitionItem {
     @Column(nullable = false)
     private Double applyQty;
 
+    /** 申请时该 楼栋/工序/材料 口径的原预算量快照（追加领料核对用） */
+    private Double budgetQty = 0d;
+
+    /** 申请时该班组同口径累计已领量快照（追加领料核对用） */
+    private Double alreadyIssuedQty = 0d;
+
     /** 实发数量（发料时填写，用于追加/少发场景） */
     private Double issuedQty = 0d;
 

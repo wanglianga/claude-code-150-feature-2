@@ -34,6 +34,24 @@ public final class Requests {
 
     public record IssueRequest(@NotNull List<IssueItemIn> items, String remark) {}
 
+    /** 设计/施工变更引起的追加领料（材料追加 + 人工追加） */
+    public record AdditionalItemIn(@NotNull Long materialId,
+                                   @NotNull @PositiveOrZero Double applyQty) {}
+
+    public record AdditionalRequisitionRequest(
+            @NotNull Long visaId,
+            @NotNull Long crewId,
+            @NotBlank String building,
+            String area,
+            @NotBlank String process,
+            String drawingNo,
+            /** VISA_CLAIM 可向甲方签证 / REWORK 施工返工计责任班组 */
+            @NotBlank String costBearing,
+            @PositiveOrZero Double extraLaborQty,
+            @PositiveOrZero Double extraLaborPrice,
+            String remark,
+            @NotNull List<AdditionalItemIn> items) {}
+
     public record ReturnRequest(
             @NotNull Long crewId,
             Long requisitionId,

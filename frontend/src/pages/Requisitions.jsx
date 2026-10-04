@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { api, getUser } from '../api.js'
-import { Card, Modal, Field, Badge, fmt, fmtTime, useToast, useMeta } from '../ui.jsx'
+import { Card, Modal, Field, Badge, fmt, fmtTime, useToast, useMeta,
+  COST_BEARING_SHORT } from '../ui.jsx'
 
 export default function Requisitions() {
   const toast = useToast()
@@ -8,6 +9,7 @@ export default function Requisitions() {
   const user = getUser()
   const canCreate = ['ROLE_FOREMAN', 'ROLE_KEEPER', 'ROLE_PM'].includes(user.role)
   const canIssue = ['ROLE_KEEPER', 'ROLE_PM'].includes(user.role)
+  const canApprove = user.role === 'ROLE_PM'
 
   const [rows, setRows] = useState([])
   const [status, setStatus] = useState('')
@@ -69,6 +71,15 @@ export default function Requisitions() {
     } catch (e) { toast(e.message, 'err') }
   }
 
+  const doApprove = async (r) => {
+    const remark = window.prompt(`项目经理审核追加领料 ${r.code}（${COST_BEARING_SHORT[r.costBearing] || ''}），审核意见：`, '同意按设计变更追加')
+    if (remark === null) return
+    try {
+      await api.put(`/api/requisitions/${r.id}/approve`, { remark })
+      toast('追加领料已审核通过，转仓管发料'); load()
+    } catch (e) { toast(e.message, 'err') }
+  }
+
   const submitCreate = async () => {
     if (!form.crewId || !form.process) return toast('请选择班组并填写工序', 'err')
     if (form.items.some((i) => !i.materialId || !i.applyQty)) return toast('请完善领料明细', 'err')
@@ -103,7 +114,8 @@ export default function Requisitions() {
                   <label>状态</label>
                   <select value={status} onChange={(e) => setStatus(e.target.value)}>
                     <option value="">全部</option>
-                    <option value="SUBMITTED">待发料</option>
+                    <option value="SUBMITTED">待发料/待审核</option>
+                    <option value="APPROVED">已审核待发料</option>
                     <option value="ISSUED">已发料</option>
                     <option value="REJECTED">已驳回</option>
                   </select>
@@ -120,25 +132,58 @@ export default function Requisitions() {
             </tr></thead>
             <tbody>
             {rows.map((r) => (
-              <tr key={r.id}>
+              <tr key={r.id} style={r.changeAdditional ? { background: 'rgba(37,99,235,0.05)' } : undefined}>
                 <td className="code-link" onClick={() => setDetail(r)}>{r.code}</td>
                 <td>{r.crewName}</td>
                 <td>{r.building}<div className="muted" style={{ fontSize: 12 }}>{r.area}</div></td>
                 <td>{r.process}<div className="muted" style={{ fontSize: 12 }}>{r.drawingNo}</div></td>
-                <td>{r.items.map((i) => `${i.materialName}×${fmt(i.issuedQty || i.applyQty)}`).join('，')}</td>
-                <td className="num">{fmt(r.totalAmount)}</td>
-                <td>{r.urgent && <Badge status="SUBMITTED" label="夜间紧急" tone="red" />}</td>
-                <td><Badge status={r.status} /></td>
-                <td style={{ fontSize: 12 }}>{r.applicant}<div className="muted">{r.issuedBy || '—'}</div></td>
+                <td>{r.items.map((i) => `${i.materialName}×${fmt(i.issuedQty || i.applyQty)}`).join('，')}
+                  {r.extraLaborAmount > 0 && <div className="muted" style={{ fontSize: 12 }}>追加人工 {fmt(r.extraLaborQty)} 工日</div>}
+                </td>
+                <td className="num">{fmt(r.totalAmount)}
+                  {r.extraLaborAmount > 0 && <div className="muted" style={{ fontSize: 12 }}>含人工 {fmt(r.extraLaborAmount)}</div>}
+                </td>
+                <td>
+                  {r.changeAdditional
+                    ? <Badge status="APPROVED" label={`变更追加·${r.visaCode || ''}`} tone="blue" />
+                    : r.urgent && <Badge status="SUBMITTED" label="夜间紧急" tone="red" />}
+                  {r.changeAdditional && (
+                    <div style={{ marginTop: 4 }}>
+                      <Badge status={r.costBearing === 'REWORK' ? 'FAILED' : 'CONFIRMED'}
+                             label={COST_BEARING_SHORT[r.costBearing] || r.costBearing}
+                             tone={r.costBearing === 'REWORK' ? 'red' : 'green'} />
+                    </div>
+                  )}
+                </td>
+                <td><Badge status={r.status} />
+                  {r.status === 'APPROVED' && <div className="muted" style={{ fontSize: 12 }}>待发料</div>}
+                </td>
+                <td style={{ fontSize: 12 }}>{r.applicant}
+                  <div className="muted">{r.changeAdditional ? (r.issuedBy || r.approvedBy || '—') : (r.issuedBy || '—')}</div>
+                </td>
                 <td style={{ fontSize: 12 }}>{fmtTime(r.applyTime)}<div className="muted">{fmtTime(r.issueTime)}</div></td>
                 <td>
-                  {r.status === 'SUBMITTED' && canIssue && (
+                  {r.status === 'SUBMITTED' && !r.changeAdditional && canIssue && (
                     <div className="btn-row">
                       <button className="btn sm primary" onClick={() => openPrecheck(r)}>核对发料</button>
                       <button className="btn sm danger" onClick={() => doReject(r)}>驳回</button>
                     </div>
                   )}
-                  {r.status === 'SUBMITTED' && !canIssue && <span className="muted" style={{ fontSize: 12 }}>待仓管发料</span>}
+                  {r.status === 'SUBMITTED' && r.changeAdditional && canApprove && (
+                    <div className="btn-row">
+                      <button className="btn sm primary" onClick={() => doApprove(r)}>项目经理审核</button>
+                      <button className="btn sm danger" onClick={() => doReject(r)}>驳回</button>
+                    </div>
+                  )}
+                  {r.status === 'SUBMITTED' && r.changeAdditional && !canApprove && (
+                    <span className="muted" style={{ fontSize: 12 }}>待项目经理审核</span>
+                  )}
+                  {r.status === 'SUBMITTED' && !r.changeAdditional && !canIssue && (
+                    <span className="muted" style={{ fontSize: 12 }}>待仓管发料</span>
+                  )}
+                  {r.status === 'APPROVED' && canIssue && (
+                    <button className="btn sm primary" onClick={() => openPrecheck(r)}>核对发料</button>
+                  )}
                   {r.status === 'ISSUED' && <button className="btn sm ghost" onClick={() => setDetail(r)}>查看</button>}
                   {r.status === 'REJECTED' && <span className="muted" style={{ fontSize: 12 }}>已驳回</span>}
                 </td>
@@ -217,6 +262,17 @@ export default function Requisitions() {
             {pre.requisition.crewName} · {pre.requisition.building} {pre.requisition.area} ·
             <b> {pre.requisition.process}</b> · 图纸 {pre.requisition.drawingNo || '—'}
             {pre.requisition.urgent && <span className="tag-mini" style={{ marginLeft: 8 }}>夜间紧急</span>}
+            {pre.requisition.changeAdditional && (
+              <div style={{ marginTop: 6 }}>
+                <Badge status="APPROVED" label={`变更追加 · 关联签证 ${pre.requisition.visaCode}`} tone="blue" />{' '}
+                <Badge status={pre.requisition.costBearing === 'REWORK' ? 'FAILED' : 'CONFIRMED'}
+                       label={COST_BEARING_SHORT[pre.requisition.costBearing] || pre.requisition.costBearing}
+                       tone={pre.requisition.costBearing === 'REWORK' ? 'red' : 'green'} />
+                <span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>
+                  已由 {pre.requisition.approvedBy} 审核，发料后新增材料与变更编号绑定
+                </span>
+              </div>
+            )}
           </div>
           <div className="table-scroll">
             <table className="tbl">
@@ -270,15 +326,32 @@ export default function Requisitions() {
             {detail.crewName} · {detail.building} {detail.area} · {detail.process} · {detail.drawingNo}<br/>
             状态：<Badge status={detail.status} />　申请人：{detail.applicant}　仓管：{detail.issuedBy || '—'}　班长确认：{detail.confirmedBy || '—'}
             {detail.urgent && <span className="tag-mini" style={{ marginLeft: 8 }}>夜间紧急</span>}
+            {detail.changeAdditional && (
+              <div style={{ marginTop: 6 }}>
+                <Badge status="APPROVED" label={`变更追加领料 · 关联签证 ${detail.visaCode}`} tone="blue" />{' '}
+                <Badge status={detail.costBearing === 'REWORK' ? 'FAILED' : 'CONFIRMED'}
+                       label={COST_BEARING_SHORT[detail.costBearing] || detail.costBearing}
+                       tone={detail.costBearing === 'REWORK' ? 'red' : 'green'} />
+                <span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>
+                  PM 审核：{detail.approvedBy || '—'} {fmtTime(detail.approvedTime)}
+                </span>
+              </div>
+            )}
           </div>
           <table className="tbl">
-            <thead><tr><th>材料</th><th className="num">申请量</th><th>批次</th><th className="num">实发量</th>
+            <thead><tr><th>材料</th><th className="num">申请量</th>
+                {detail.changeAdditional && <><th className="num">原预算量</th><th className="num">申请前已领</th></>}
+                <th>批次</th><th className="num">实发量</th>
               <th className="num">发料单价</th><th className="num">金额</th></tr></thead>
             <tbody>
             {detail.items.map((i) => (
               <tr key={i.itemId}>
                 <td>{i.materialName}</td>
                 <td className="num">{fmt(i.applyQty)} {i.unit}</td>
+                {detail.changeAdditional && (
+                  <><td className="num">{fmt(i.budgetQty)} {i.unit}</td>
+                  <td className="num">{fmt(i.alreadyIssuedQty)} {i.unit}</td></>
+                )}
                 <td>{i.batchNo || '—'}</td>
                 <td className="num">{fmt(i.issuedQty)} {i.unit}</td>
                 <td className="num">{fmt(i.issuePrice)}</td>
@@ -287,7 +360,26 @@ export default function Requisitions() {
             ))}
             </tbody>
           </table>
-          <div className="right" style={{ marginTop: 10, fontWeight: 700 }}>合计：{fmt(detail.totalAmount)} 元</div>
+          {detail.changeAdditional && (
+            <table className="tbl" style={{ marginTop: 10 }}>
+              <tbody>
+                <tr><td>追加人工</td><td className="num">{fmt(detail.extraLaborQty)} 工日 × {fmt(detail.extraLaborPrice)} 元</td>
+                  <td className="num">{fmt(detail.extraLaborAmount)} 元</td></tr>
+                <tr><td>材料合计</td><td className="num">—</td><td className="num">{fmt(detail.materialAmount)} 元</td></tr>
+              </tbody>
+            </table>
+          )}
+          <div className="right" style={{ marginTop: 10, fontWeight: 700 }}>
+            合计（含人工）：{fmt(detail.totalAmount)} 元
+          </div>
+          {detail.changeAdditional && detail.status === 'ISSUED' && (
+            <div className="kpi-note" style={{ marginTop: 8 }}>
+              该批追加材料已与变更编号 <b>{detail.visaCode}</b> 绑定：
+              {detail.costBearing === 'VISA_CLAIM'
+                ? '材料与人工成本进入对甲方签证索赔清单，不计入合同内成本、不扣班组。'
+                : '属施工返工，材料与人工成本计入责任班组，月底核算进入班组扣款。'}
+            </div>
+          )}
           {detail.remark && <div className="kpi-note" style={{ marginTop: 8 }}>备注：{detail.remark}</div>}
         </Modal>
       )}

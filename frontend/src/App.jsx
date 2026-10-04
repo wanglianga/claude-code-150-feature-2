@@ -30,7 +30,7 @@ const NAV = [
   { path: '/requisitions', label: '领料单', icon: '📝', roles: ['*'], el: <RequisitionsPage /> },
   { path: '/returns', label: '退库单', icon: '↩️', roles: ['*'], el: <ReturnsPage /> },
   { path: '/wastes', label: '损耗登记', icon: '⚠️', roles: ['ROLE_PM', 'ROLE_KEEPER', 'ROLE_FINANCE'], el: <WastesPage /> },
-  { path: '/visas', label: '变更签证', icon: '🛠️', roles: ['ROLE_PM', 'ROLE_BUDGET', 'ROLE_KEEPER', 'ROLE_FINANCE'], el: <VisasPage /> },
+  { path: '/visas', label: '变更签证与追加领料', icon: '🛠️', roles: ['ROLE_PM', 'ROLE_BUDGET', 'ROLE_KEEPER', 'ROLE_FINANCE', 'ROLE_FOREMAN'], el: <VisasPage /> },
   { path: '/budgets', label: '工程预算', icon: '📐', roles: ['ROLE_PM', 'ROLE_BUDGET', 'ROLE_KEEPER'], el: <BudgetsPage /> },
   { group: '核算与分析' },
   { path: '/consumption', label: '楼栋消耗与偏差', icon: '📊', roles: ['*'], el: <ConsumptionPage /> },
