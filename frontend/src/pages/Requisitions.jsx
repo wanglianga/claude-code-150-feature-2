@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { api, getUser } from '../api.js'
-import { Card, Modal, Field, Badge, fmt, fmtTime, useToast, useMeta } from '../ui.jsx'
+import { Card, Modal, Field, Badge, fmt, fmtTime, useToast, useMeta, COST_BEARING, COST_BEARING_TONE } from '../ui.jsx'
 
 export default function Requisitions() {
   const toast = useToast()
@@ -127,7 +127,16 @@ export default function Requisitions() {
                 <td>{r.process}<div className="muted" style={{ fontSize: 12 }}>{r.drawingNo}</div></td>
                 <td>{r.items.map((i) => `${i.materialName}×${fmt(i.issuedQty || i.applyQty)}`).join('，')}</td>
                 <td className="num">{fmt(r.totalAmount)}</td>
-                <td>{r.urgent && <Badge status="SUBMITTED" label="夜间紧急" tone="red" />}</td>
+                <td>
+                  {r.urgent && <Badge status="SUBMITTED" label="夜间紧急" tone="red" />}
+                  {r.supplementId && (
+                    <div style={{ marginTop: 2 }}>
+                      <Badge status="DRAFT"
+                        label={`变更追加·${COST_BEARING[r.costBearing] || ''}`}
+                        tone={COST_BEARING_TONE[r.costBearing] || 'blue'} />
+                    </div>
+                  )}
+                </td>
                 <td><Badge status={r.status} /></td>
                 <td style={{ fontSize: 12 }}>{r.applicant}<div className="muted">{r.issuedBy || '—'}</div></td>
                 <td style={{ fontSize: 12 }}>{fmtTime(r.applyTime)}<div className="muted">{fmtTime(r.issueTime)}</div></td>
@@ -270,6 +279,11 @@ export default function Requisitions() {
             {detail.crewName} · {detail.building} {detail.area} · {detail.process} · {detail.drawingNo}<br/>
             状态：<Badge status={detail.status} />　申请人：{detail.applicant}　仓管：{detail.issuedBy || '—'}　班长确认：{detail.confirmedBy || '—'}
             {detail.urgent && <span className="tag-mini" style={{ marginLeft: 8 }}>夜间紧急</span>}
+            {detail.supplementId && (
+              <span className="tag-mini" style={{ marginLeft: 8 }}>
+                变更追加领料（绑定签证 #{detail.visaId} · {COST_BEARING[detail.costBearing]}）
+              </span>
+            )}
           </div>
           <table className="tbl">
             <thead><tr><th>材料</th><th className="num">申请量</th><th>批次</th><th className="num">实发量</th>

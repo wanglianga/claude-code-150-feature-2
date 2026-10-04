@@ -26,12 +26,14 @@ public class DataInitializer implements CommandLineRunner {
     private final WasteRepository wasteRepo;
     private final ChangeVisaRepository visaRepo;
     private final StockCheckRepository checkRepo;
+    private final SupplementRepository suppRepo;
 
     public DataInitializer(UserRepository userRepo, CrewRepository crewRepo, SupplierRepository supplierRepo,
                            MaterialRepository materialRepo, MaterialBatchRepository batchRepo,
                            ProjectBudgetRepository budgetRepo, RequisitionRepository reqRepo,
                            MaterialReturnRepository returnRepo, WasteRepository wasteRepo,
-                           ChangeVisaRepository visaRepo, StockCheckRepository checkRepo) {
+                           ChangeVisaRepository visaRepo, StockCheckRepository checkRepo,
+                           SupplementRepository suppRepo) {
         this.userRepo = userRepo;
         this.crewRepo = crewRepo;
         this.supplierRepo = supplierRepo;
@@ -43,6 +45,7 @@ public class DataInitializer implements CommandLineRunner {
         this.wasteRepo = wasteRepo;
         this.visaRepo = visaRepo;
         this.checkRepo = checkRepo;
+        this.suppRepo = suppRepo;
     }
 
     @Override
@@ -97,7 +100,7 @@ public class DataInitializer implements CommandLineRunner {
         MaterialBatch b2 = batch("RK20260928002", m2, "22#", s1, 200, 25, "PASSED",
                 60, 0, 0, 0, t(9, 28, 9));
         MaterialBatch b3 = batch("RK20260927001", m3, "4mm", s2, 2000, 32, "PASSED",
-                300, 20, 10, 0, t(9, 27, 10));
+                420, 20, 10, 0, t(9, 27, 10));
         MaterialBatch b3b = batch("RK20261002001", m3, "4mm(补货)", s2, 200, 32, "FAILED",
                 0, 0, 30, 0, t(10, 2, 15));
         MaterialBatch b4 = batch("RK20260929001", m4, "600×600", s3, 1000, 58, "PASSED",
@@ -124,6 +127,7 @@ public class DataInitializer implements CommandLineRunner {
         budget("1#楼", "标准层", "机电预埋", "电施-401", m6, 2000, 3.5, c5);
         budget("1#楼", "标准层", "机电预埋", "电施-401", m7, 3000, 1.2, c5);
         budget("2#楼", "A区", "主体结构", "结施-102", m1, 8, 4200, c1);
+        budget("2#楼", "卫生间", "防水工程", "建防-208", m3, 400, 32, c4);
 
         // ---------- 已发料领料单（10月） ----------
         Requisition r1 = requisition("LL20261001001", c1, "1#楼", "A区", "主体结构", "结施-101",
@@ -205,6 +209,105 @@ public class DataInitializer implements CommandLineRunner {
         v1.setCreatedTime(t(10, 2, 13));
         v1.setConfirmTime(t(10, 2, 17));
         visaRepo.save(v1);
+
+        // ---------- 施工变更导致材料追加：卫生间防水高度临时调整 ----------
+        // ① 设计变更：卫生间防水上翻高度由 300mm 调整为 1800mm（项目经理已确认）
+        ChangeVisa v2 = new ChangeVisa();
+        v2.setCode("QZ20261003002");
+        v2.setBuilding("2#楼");
+        v2.setArea("卫生间");
+        v2.setProcess("防水工程");
+        v2.setDrawingNo("建防-208");
+        v2.setMaterialId(m3.getId());
+        v2.setCrewId(c4.getId());
+        v2.setChangeType("DESIGN");
+        v2.setDescription("设计临时调整卫生间防水上翻高度，由300mm提高至1800mm，防水班组需追加SBS卷材及附加层人工");
+        v2.setQtyChange(200d);
+        v2.setUnitPrice(32d);
+        v2.setClaimAmount(0d); // 以追加领料实际发生材料+人工进入索赔清单
+        v2.setStatus("CONFIRMED");
+        v2.setApplicant("赵磊");
+        v2.setConfirmer("张项目");
+        v2.setCreatedTime(t(10, 3, 10));
+        v2.setConfirmTime(t(10, 3, 11));
+        visaRepo.save(v2);
+
+        // ② 防水班组发起追加领料（卷材+人工），PM 审核判定可向甲方签证，已发料并绑定变更编号
+        MaterialSupplement zj1 = supplement("ZJ20261003001", v2, c4,
+                "2#楼", "卫生间", "防水工程", "建防-208",
+                "卫生间防水高度调整为1.8m，墙面附加层需追加SBS卷材120㎡及人工",
+                "VISA", 3600d, "ISSUED", "赵磊", "张项目", t(10, 3, 10), t(10, 3, 11));
+        supplementItem(zj1, m3, 120d, "卫生间墙面防水上翻至1.8m附加层");
+        suppRepo.save(zj1);
+
+        Requisition zr1 = requisition("LZ20261003001", c4, "2#楼", "卫生间", "防水工程", "建防-208",
+                "ISSUED", false, "赵磊", "周材料", t(10, 3, 13), t(10, 3, 14));
+        zr1.setSupplementId(zj1.getId());
+        zr1.setVisaId(v2.getId());
+        zr1.setCostBearing("VISA");
+        zr1.setRemark("变更[QZ20261003002]追加领料：卫生间防水高度调整，追加卷材及人工");
+        item(zr1, m3, b3, 120, 120, 32);
+        saveReq(zr1);
+        zj1.setRequisitionId(zr1.getId());
+        suppRepo.save(zj1);
+        v2.setSupplementId(zj1.getId());
+        visaRepo.save(v2);
+
+        // ③ 待 PM 审核：同层其余卫生间防水高度同步调整（可签证），追加卷材 80㎡ + 人工
+        ChangeVisa v3 = new ChangeVisa();
+        v3.setCode("QZ20261003003");
+        v3.setBuilding("2#楼");
+        v3.setArea("卫生间");
+        v3.setProcess("防水工程");
+        v3.setDrawingNo("建防-208");
+        v3.setMaterialId(m3.getId());
+        v3.setCrewId(c4.getId());
+        v3.setChangeType("DESIGN");
+        v3.setDescription("同层其余卫生间防水高度同步调整为1800mm，继续追加卷材及附加层人工");
+        v3.setQtyChange(80d);
+        v3.setUnitPrice(32d);
+        v3.setClaimAmount(0d);
+        v3.setStatus("CONFIRMED");
+        v3.setApplicant("赵磊");
+        v3.setConfirmer("张项目");
+        v3.setCreatedTime(t(10, 3, 15));
+        v3.setConfirmTime(t(10, 3, 16));
+        visaRepo.save(v3);
+
+        MaterialSupplement zj2 = supplement("ZJ20261003002", v3, c4,
+                "2#楼", "卫生间", "防水工程", "建防-208",
+                "同层其余卫生间防水上翻高度同步提高，追加SBS卷材80㎡及人工",
+                "VISA", 2400d, "SUBMITTED", "赵磊", null, t(10, 3, 16), null);
+        supplementItem(zj2, m3, 80d, "其余卫生间墙面防水附加层");
+        suppRepo.save(zj2);
+
+        // ④ 待 PM 审核：施工返工（搭接不达标铲除重做），追加成本应计入责任班组
+        ChangeVisa v4 = new ChangeVisa();
+        v4.setCode("QZ20261003004");
+        v4.setBuilding("2#楼");
+        v4.setArea("卫生间");
+        v4.setProcess("防水工程");
+        v4.setDrawingNo("建防-208");
+        v4.setMaterialId(m3.getId());
+        v4.setCrewId(c4.getId());
+        v4.setChangeType("CONSTRUCTION");
+        v4.setDescription("卫生间防水立面卷材搭接宽度不达标、局部空鼓，需铲除返工重做，不可向甲方签证");
+        v4.setQtyChange(60d);
+        v4.setUnitPrice(32d);
+        v4.setClaimAmount(0d);
+        v4.setStatus("CONFIRMED");
+        v4.setApplicant("赵磊");
+        v4.setConfirmer("张项目");
+        v4.setCreatedTime(t(10, 3, 16));
+        v4.setConfirmTime(t(10, 3, 17));
+        visaRepo.save(v4);
+
+        MaterialSupplement zj3 = supplement("ZJ20261003003", v4, c4,
+                "2#楼", "卫生间", "防水工程", "建防-208",
+                "返工部位铲除后重新铺贴，追加SBS卷材60㎡及返工人工",
+                "CREW", 1800d, "SUBMITTED", "赵磊", null, t(10, 3, 17), null);
+        supplementItem(zj3, m3, 60d, "返工部位重新铺贴卷材");
+        suppRepo.save(zj3);
 
         // ---------- 退库 ----------
         MaterialReturn t1 = retDoc("TK20261002001", c5, r6.getId(), "1#楼", "标准层", "机电预埋",
@@ -425,5 +528,38 @@ public class DataInitializer implements CommandLineRunner {
         i.setResponsibility(resp);
         i.setRemark(remark);
         sc.getItems().add(i);
+    }
+
+    private MaterialSupplement supplement(String code, ChangeVisa visa, Crew crew, String building,
+                                          String area, String process, String drawing, String reason,
+                                          String bearing, double labor, String status,
+                                          String applicant, String reviewer,
+                                          LocalDateTime applyTime, LocalDateTime reviewTime) {
+        MaterialSupplement s = new MaterialSupplement();
+        s.setCode(code);
+        s.setVisaId(visa.getId());
+        s.setCrewId(crew.getId());
+        s.setBuilding(building);
+        s.setArea(area);
+        s.setProcess(process);
+        s.setDrawingNo(drawing);
+        s.setReason(reason);
+        s.setCostBearing(bearing);
+        s.setLaborCost(labor);
+        s.setStatus(status);
+        s.setApplicant(applicant);
+        s.setReviewer(reviewer);
+        s.setApplyTime(applyTime);
+        s.setReviewTime(reviewTime);
+        return s;
+    }
+
+    private void supplementItem(MaterialSupplement s, Material m, double qty, String usage) {
+        SupplementItem i = new SupplementItem();
+        i.setSupplement(s);
+        i.setMaterialId(m.getId());
+        i.setApplyQty(qty);
+        i.setUsage(usage);
+        s.getItems().add(i);
     }
 }

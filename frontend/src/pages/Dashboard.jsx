@@ -9,12 +9,20 @@ export default function Dashboard() {
   const [inv, setInv] = useState(null)
   const [pending, setPending] = useState([])
   const [finance, setFinance] = useState(null)
+  const [suppReview, setSuppReview] = useState([])
+  const [suppIssue, setSuppIssue] = useState([])
 
   useEffect(() => {
     api.get('/api/inventory').then(setInv).catch(() => {})
     api.get('/api/requisitions?status=SUBMITTED').then(setPending).catch(() => {})
     if (user.role === 'ROLE_FINANCE' || user.role === 'ROLE_PM') {
       api.get('/api/analytics/finance').then(setFinance).catch(() => {})
+    }
+    if (user.role === 'ROLE_PM' || user.role === 'ROLE_BUDGET') {
+      api.get('/api/supplements?status=SUBMITTED').then(setSuppReview).catch(() => {})
+    }
+    if (user.role === 'ROLE_KEEPER' || user.role === 'ROLE_PM') {
+      api.get('/api/supplements?status=APPROVED').then(setSuppIssue).catch(() => {})
     }
   }, [])
 
@@ -26,6 +34,9 @@ export default function Dashboard() {
         { label: '在库材料种类', value: inv?.rows?.length ?? '—', sub: '七大类主材与劳保', tone: 'brand' },
         { label: '库存总价值（元）', value: fmt(inv?.totalStockValue), sub: '按批次单价×现场库存', tone: 'blue' },
         { label: '待发料领料单', value: pending.length, sub: '含夜间紧急领料单', tone: pending.length ? 'red' : 'green' },
+        { label: '变更追加待办', value: suppReview.length + suppIssue.length,
+          sub: `待PM审核 ${suppReview.length} / 待仓管发料 ${suppIssue.length}`,
+          tone: suppReview.length + suppIssue.length ? 'red' : 'green' },
         { label: '库存预警 / 待质检', value: `${inv?.lowStockCount ?? 0} / ${inv?.pendingQcCount ?? 0}`,
           sub: '低于安全库存 / 质检待处理', tone: inv?.lowStockCount ? 'red' : 'green' }
       ]} />
@@ -70,15 +81,17 @@ export default function Dashboard() {
         <Card title={`${ROLE_LABEL[user.role]}工作台`} hint="按角色关注的核心指标">
           <div className="kpi-note">
             {user.role === 'ROLE_PM' && <>
-              <div>项目经理关注：某楼栋/工序的<b>真实材料消耗</b>与预算偏差。</div>
+              <div>项目经理关注：某楼栋/工序的<b>真实材料消耗</b>与预算偏差，以及变更追加领料的成本承担判定（可签证 / 施工返工）。</div>
               <div className="btn-row" style={{ marginTop: 10 }}>
+                <button className="btn primary" onClick={() => go('/supplements')}>变更追加审核</button>
                 <button className="btn" onClick={() => go('/consumption')}>楼栋消耗与偏差</button>
                 <button className="btn" onClick={() => go('/settlements')}>班组月度核算</button>
               </div>
             </>}
             {user.role === 'ROLE_KEEPER' && <>
-              <div>材料员关注：入库质检、发料核对、退库入库、损耗核销、盘点账实与<b>月底损耗复盘</b>。</div>
+              <div>材料员关注：入库质检、发料核对（含变更追加领料）、退库入库、损耗核销、盘点账实与<b>月底损耗复盘</b>。</div>
               <div className="btn-row" style={{ marginTop: 10 }}>
+                <button className="btn primary" onClick={() => go('/supplements')}>追加领料发料</button>
                 <button className="btn" onClick={() => go('/batches')}>入库与质检</button>
                 <button className="btn" onClick={() => go('/stock-checks')}>盘点调账</button>
                 <button className="btn" onClick={() => go('/waste-review')}>损耗复盘</button>
@@ -104,9 +117,10 @@ export default function Dashboard() {
               </div>
             </>}
             {user.role === 'ROLE_FOREMAN' && <>
-              <div>班组长可提交领料申请（含夜间紧急）、办理退库，并查看本班组材料成本。</div>
+              <div>班组长可提交领料申请（含夜间紧急）、因设计/施工变更发起<b>变更追加领料</b>、办理退库，并查看本班组材料成本。</div>
               <div className="btn-row" style={{ marginTop: 10 }}>
                 <button className="btn primary" onClick={() => go('/requisitions')}>申请领料</button>
+                <button className="btn" onClick={() => go('/supplements')}>变更追加领料</button>
                 <button className="btn" onClick={() => go('/returns')}>办理退库</button>
                 <button className="btn" onClick={() => go('/settlements')}>本班组核算</button>
               </div>
@@ -114,6 +128,36 @@ export default function Dashboard() {
           </div>
         </Card>
       </div>
+
+      {(suppReview.length > 0 || suppIssue.length > 0) && (
+        <Card title="变更追加领料待办"
+              hint="设计/施工变更（如卫生间防水高度调整）引发的材料与人工追加"
+              actions={<button className="btn sm" onClick={() => go('/supplements')}>去处理</button>} flush>
+          <div className="table-scroll">
+            <table className="tbl">
+              <thead><tr>
+                <th>追加单号</th><th>变更签证</th><th>楼栋/工序</th><th>班组</th>
+                <th>追加内容</th><th className="num">材料费/人工</th><th>待办</th>
+              </tr></thead>
+              <tbody>
+              {[...suppReview, ...suppIssue].map((s) => (
+                <tr key={s.id}>
+                  <td className="code-link">{s.code}</td>
+                  <td><b>{s.visaCode}</b></td>
+                  <td>{s.building} {s.area}<div className="muted" style={{ fontSize: 12 }}>{s.process}</div></td>
+                  <td>{s.crewName}</td>
+                  <td className="desc-cell" style={{ maxWidth: 260 }}>{s.reason}</td>
+                  <td className="num">{fmt(s.laborCost)} 元人工</td>
+                  <td>{s.status === 'SUBMITTED'
+                    ? <Badge status="SUBMITTED" label="待PM审核判定承担方" tone="amber" />
+                    : <Badge status="APPROVED" label="待仓管发料" />}</td>
+                </tr>
+              ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
 
       <Card title="库存预警与质检提醒" flush>
         <div className="table-scroll">

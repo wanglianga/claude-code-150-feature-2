@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api, getUser } from '../api.js'
-import { Card, Modal, Field, Badge, fmt, fmtTime, useToast, useMeta, CHANGE_TYPE } from '../ui.jsx'
+import { Card, Modal, Field, Badge, fmt, fmtTime, useToast, useMeta, CHANGE_TYPE, COST_BEARING, COST_BEARING_TONE } from '../ui.jsx'
 
 export default function Visas() {
   const toast = useToast()
@@ -11,14 +11,20 @@ export default function Visas() {
   const canClaim = user.role === 'ROLE_FINANCE'
 
   const [rows, setRows] = useState([])
+  const [supps, setSupps] = useState([])
   const [show, setShow] = useState(false)
   const [f, setF] = useState({
     building: '1#楼', area: '', process: '', drawingNo: '', materialId: '', crewId: '',
     changeType: 'DESIGN', description: '', qtyChange: '', unitPrice: '', claimAmount: ''
   })
 
-  const load = () => api.get('/api/visas').then(setRows)
+  const load = () => {
+    api.get('/api/visas').then(setRows)
+    api.get('/api/supplements').then(setSupps).catch(() => {})
+  }
   useEffect(() => { load() }, [])
+
+  const suppById = (id) => supps.find((s) => s.id === id)
 
   const submit = async () => {
     try {
@@ -51,12 +57,13 @@ export default function Visas() {
           <thead><tr>
             <th>签证号</th><th>楼栋/工序</th><th>变更类型</th><th>涉及材料/班组</th>
             <th className="num">材料量变化</th><th className="num">索赔金额</th><th>状态</th>
-            <th>内容</th><th>登记/确认时间</th><th>操作</th>
+            <th>内容</th><th>追加领料绑定</th><th>登记/确认时间</th><th>操作</th>
           </tr></thead>
           <tbody>
           {rows.map((v) => {
             const m = meta.materials.find((x) => x.id === v.materialId)
             const c = meta.crews.find((x) => x.id === v.crewId)
+            const sp = suppById(v.supplementId)
             return (
               <tr key={v.id}>
                 <td className="code-link">{v.code}</td>
@@ -67,6 +74,18 @@ export default function Visas() {
                 <td className="num"><b>{fmt(v.claimAmount)}</b></td>
                 <td><Badge status={v.status} /></td>
                 <td className="desc-cell">{v.description}</td>
+                <td style={{ fontSize: 12 }}>
+                  {sp ? (
+                    <>
+                      <div><b>{sp.code}</b></div>
+                      <div className="muted">{sp.requisitionCode || '待生成领料单'}</div>
+                      <div style={{ marginTop: 2 }}>
+                        <Badge status="DRAFT" label={COST_BEARING[sp.costBearing]}
+                               tone={COST_BEARING_TONE[sp.costBearing]} />
+                      </div>
+                    </>
+                  ) : <span className="muted">未绑定追加领料</span>}
+                </td>
                 <td style={{ fontSize: 12 }}>{fmtTime(v.createdTime)}<div className="muted">{fmtTime(v.confirmTime)}</div></td>
                 <td>
                   {v.status === 'DRAFT' && canConfirm && <button className="btn sm primary" onClick={() => confirm(v)}>确认</button>}

@@ -58,6 +58,19 @@ public class Requisition {
 
     private String remark;
 
+    /** 变更追加领料单：来源追加申请（普通领料为空） */
+    private Long supplementId;
+
+    /** 变更追加领料单：绑定的变更签证编号 */
+    private Long visaId;
+
+    /**
+     * 成本承担方（普通合同内领料为空）：
+     * VISA 可向甲方签证（合同外签证成本）/ CREW 施工返工（责任班组承担）/ COMPANY 项目承担
+     */
+    @Column(length = 16)
+    private String costBearing;
+
     @OneToMany(mappedBy = "requisition", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<RequisitionItem> items = new ArrayList<>();
 }

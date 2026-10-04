@@ -11,6 +11,7 @@ import RequisitionsPage from './pages/Requisitions.jsx'
 import ReturnsPage from './pages/Returns.jsx'
 import WastesPage from './pages/Wastes.jsx'
 import VisasPage from './pages/Visas.jsx'
+import SupplementsPage from './pages/Supplements.jsx'
 import SettlementsPage from './pages/Settlements.jsx'
 import ConsumptionPage from './pages/Consumption.jsx'
 import WasteReviewPage from './pages/WasteReview.jsx'
@@ -31,6 +32,7 @@ const NAV = [
   { path: '/returns', label: '退库单', icon: '↩️', roles: ['*'], el: <ReturnsPage /> },
   { path: '/wastes', label: '损耗登记', icon: '⚠️', roles: ['ROLE_PM', 'ROLE_KEEPER', 'ROLE_FINANCE'], el: <WastesPage /> },
   { path: '/visas', label: '变更签证', icon: '🛠️', roles: ['ROLE_PM', 'ROLE_BUDGET', 'ROLE_KEEPER', 'ROLE_FINANCE'], el: <VisasPage /> },
+  { path: '/supplements', label: '变更追加领料', icon: '🧱', roles: ['*'], el: <SupplementsPage /> },
   { path: '/budgets', label: '工程预算', icon: '📐', roles: ['ROLE_PM', 'ROLE_BUDGET', 'ROLE_KEEPER'], el: <BudgetsPage /> },
   { group: '核算与分析' },
   { path: '/consumption', label: '楼栋消耗与偏差', icon: '📊', roles: ['*'], el: <ConsumptionPage /> },

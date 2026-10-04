@@ -29,12 +29,14 @@ public class AnalyticsService {
     private final CrewRepository crewRepo;
     private final ChangeVisaRepository visaRepo;
     private final SettlementRepository settlementRepo;
+    private final SupplementRepository suppRepo;
 
     public AnalyticsService(RequisitionRepository reqRepo, MaterialReturnRepository returnRepo,
                             WasteRepository wasteRepo, MaterialBatchRepository batchRepo,
                             ProjectBudgetRepository budgetRepo, MaterialRepository materialRepo,
                             SupplierRepository supplierRepo, CrewRepository crewRepo,
-                            ChangeVisaRepository visaRepo, SettlementRepository settlementRepo) {
+                            ChangeVisaRepository visaRepo, SettlementRepository settlementRepo,
+                            SupplementRepository suppRepo) {
         this.reqRepo = reqRepo;
         this.returnRepo = returnRepo;
         this.wasteRepo = wasteRepo;
@@ -45,6 +47,7 @@ public class AnalyticsService {
         this.crewRepo = crewRepo;
         this.visaRepo = visaRepo;
         this.settlementRepo = settlementRepo;
+        this.suppRepo = suppRepo;
     }
 
     private record Key(String building, String process, Long crewId, Long materialId) {}
@@ -306,7 +309,7 @@ public class AnalyticsService {
             supplierRows.add(row);
         }
 
-        // 班组扣款（最新月份核算单口径）
+        // 班组扣款（最新月份核算单口径），并随单带出合同内/签证/返工三类成本
         List<Settlement> settlements = settlementRepo.findAllByOrderByPeriodDescIdAsc();
         Map<Long, Settlement> latestByCrew = new LinkedHashMap<>();
         for (Settlement s : settlements) {
@@ -314,6 +317,47 @@ public class AnalyticsService {
         }
         Map<Long, String> crewNames = crewRepo.findAll().stream()
                 .collect(Collectors.toMap(Crew::getId, Crew::getName));
+
+        // 全公司三类材料成本：按已发料领料单的成本承担方拆分，完好退库按来源单冲减
+        Map<Long, String> reqBearing = new HashMap<>();
+        reqRepo.findAllWithItems().forEach(r -> reqBearing.put(r.getId(), r.getCostBearing()));
+        double companyContractIssued = 0d, companyVisaIssued = 0d, companyReworkIssued = 0d, companyBearIssued = 0d;
+        for (Requisition r : reqRepo.findAllWithItems()) {
+            if (!"ISSUED".equals(r.getStatus())) continue;
+            double amt = r.getItems().stream()
+                    .mapToDouble(i -> nz(i.getIssuedQty()) * nz(i.getIssuePrice())).sum();
+            switch (String.valueOf(r.getCostBearing())) {
+                case "VISA" -> companyVisaIssued += amt;
+                case "CREW" -> companyReworkIssued += amt;
+                case "COMPANY" -> companyBearIssued += amt;
+                default -> companyContractIssued += amt;
+            }
+        }
+        double companyContractReturned = 0d, companyVisaReturned = 0d,
+                companyReworkReturned = 0d, companyBearReturned = 0d;
+        for (MaterialReturn r : returnRepo.findAllWithItems()) {
+            if (!"CONFIRMED".equals(r.getStatus())) continue;
+            String bearing = r.getRequisitionId() == null ? null : reqBearing.get(r.getRequisitionId());
+            for (ReturnItem i : r.getItems()) {
+                if (!"GOOD".equals(i.getConditionType())) continue;
+                double amt = i.getQty() * nz(i.getPrice());
+                if ("VISA".equals(bearing)) companyVisaReturned += amt;
+                else if ("CREW".equals(bearing)) companyReworkReturned += amt;
+                else if ("COMPANY".equals(bearing)) companyBearReturned += amt;
+                else companyContractReturned += amt;
+            }
+        }
+        double companyContractCost = companyContractIssued - companyContractReturned;
+        double companyVisaCost = Math.max(0d, companyVisaIssued - companyVisaReturned);
+        double companyReworkCost = Math.max(0d, companyReworkIssued - companyReworkReturned);
+        double companyBearCost = Math.max(0d, companyBearIssued - companyBearReturned);
+        double companyVisaLabor = 0d, companyReworkLabor = 0d;
+        for (MaterialSupplement sp : suppRepo.findAllWithItems()) {
+            if ("SUBMITTED".equals(sp.getStatus()) || "REJECTED".equals(sp.getStatus())) continue;
+            if ("VISA".equals(sp.getCostBearing())) companyVisaLabor += nz(sp.getLaborCost());
+            else if ("CREW".equals(sp.getCostBearing())) companyReworkLabor += nz(sp.getLaborCost());
+        }
+
         List<Map<String, Object>> crewRows = new ArrayList<>();
         double totalDeduction = 0, totalClaim = 0;
         for (Settlement s : latestByCrew.values()) {
@@ -321,9 +365,14 @@ public class AnalyticsService {
             row.put("crewId", s.getCrewId());
             row.put("crewName", crewNames.get(s.getCrewId()));
             row.put("period", s.getPeriod());
+            row.put("contractCostAmount", s.getContractCostAmount());
             row.put("consumedAmount", s.getConsumedAmount());
             row.put("crewWasteAmount", s.getCrewWasteAmount());
             row.put("varianceAmount", s.getVarianceAmount());
+            row.put("visaMaterialAmount", s.getVisaMaterialAmount());
+            row.put("visaLaborAmount", s.getVisaLaborAmount());
+            row.put("reworkMaterialAmount", s.getReworkMaterialAmount());
+            row.put("reworkLaborAmount", s.getReworkLaborAmount());
             row.put("deductionAmount", s.getDeductionAmount());
             row.put("claimAmount", s.getClaimAmount());
             row.put("status", s.getStatus());
@@ -332,19 +381,87 @@ public class AnalyticsService {
             totalClaim += nz(s.getClaimAmount());
         }
 
-        // 变更签证索赔台账
+        // 变更追加领料索赔台账：材料与变更编号绑定，财务月底直接区分
+        Map<Long, String> visaCodes = visaRepo.findAll().stream()
+                .collect(Collectors.toMap(ChangeVisa::getId, ChangeVisa::getCode));
+        List<Map<String, Object>> supplementRows = suppRepo.findAllWithItems().stream()
+                .filter(sp -> !"REJECTED".equals(sp.getStatus()))
+                .map(sp -> {
+                    double material = 0d;
+                    String reqStatus = null, reqCode = null;
+                    if (sp.getRequisitionId() != null) {
+                        Requisition rr = reqRepo.findByIdWithItems(sp.getRequisitionId()).orElse(null);
+                        if (rr != null) {
+                            reqStatus = rr.getStatus();
+                            reqCode = rr.getCode();
+                            if ("ISSUED".equals(rr.getStatus())) {
+                                material = rr.getItems().stream()
+                                        .mapToDouble(i -> nz(i.getIssuedQty()) * nz(i.getIssuePrice())).sum();
+                            }
+                        }
+                    }
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("code", sp.getCode());
+                    row.put("visaId", sp.getVisaId());
+                    row.put("visaCode", visaCodes.get(sp.getVisaId()));
+                    row.put("crewName", crewNames.get(sp.getCrewId()));
+                    row.put("building", sp.getBuilding());
+                    row.put("process", sp.getProcess());
+                    row.put("reason", sp.getReason());
+                    row.put("costBearing", sp.getCostBearing());
+                    row.put("materialAmount", r2(material));
+                    row.put("laborCost", r2(nz(sp.getLaborCost())));
+                    row.put("totalAmount", r2(material + nz(sp.getLaborCost())));
+                    row.put("requisitionCode", reqCode);
+                    row.put("requisitionStatus", reqStatus);
+                    row.put("status", sp.getStatus());
+                    row.put("reviewTime", sp.getReviewTime());
+                    return row;
+                }).toList();
+
+        // 变更签证索赔台账：绑定可签证追加单的按追加实际成本列示；绑定施工返工的不计甲方索赔；未绑定的按登记索赔额
         List<Map<String, Object>> visaRows = visaRepo.findAllByOrderByCreatedTimeDesc().stream().map(v -> {
+            double boundMaterial = 0d, boundLabor = 0d;
+            String boundReqCode = null;
+            String boundBearing = null;
+            if (v.getSupplementId() != null) {
+                MaterialSupplement sp = suppRepo.findByIdWithItems(v.getSupplementId()).orElse(null);
+                if (sp != null) {
+                    boundBearing = sp.getCostBearing();
+                    if (sp.getRequisitionId() != null) {
+                        Requisition rr = reqRepo.findByIdWithItems(sp.getRequisitionId()).orElse(null);
+                        if (rr != null) {
+                            boundReqCode = rr.getCode();
+                            if ("ISSUED".equals(rr.getStatus())) {
+                                boundMaterial = rr.getItems().stream()
+                                        .mapToDouble(i -> nz(i.getIssuedQty()) * nz(i.getIssuePrice())).sum();
+                            }
+                        }
+                    }
+                    boundLabor = nz(sp.getLaborCost());
+                }
+            }
+            boolean bound = v.getSupplementId() != null;
+            boolean claimable = !bound || "VISA".equals(boundBearing);
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("code", v.getCode());
             row.put("building", v.getBuilding());
             row.put("process", v.getProcess());
             row.put("changeType", v.getChangeType());
             row.put("description", v.getDescription());
-            row.put("claimAmount", r2(nz(v.getClaimAmount())));
+            row.put("bound", bound);
+            row.put("costBearing", boundBearing);
+            row.put("supplementRequisition", boundReqCode);
+            row.put("materialAmount", bound ? r2(boundMaterial) : null);
+            row.put("laborAmount", bound ? r2(boundLabor) : null);
+            row.put("claimAmount", claimable
+                    ? r2(bound ? boundMaterial + boundLabor : nz(v.getClaimAmount())) : 0d);
             row.put("status", v.getStatus());
             row.put("createdTime", v.getCreatedTime());
             return row;
         }).toList();
+        double visaLedgerTotal = visaRows.stream()
+                .mapToDouble(x -> ((Number) x.get("claimAmount")).doubleValue()).sum();
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("supplierTotalInbound", r2(supplierRows.stream()
@@ -353,9 +470,18 @@ public class AnalyticsService {
                 .mapToDouble(x -> ((Number) x.get("payableAmount")).doubleValue()).sum()));
         out.put("supplierQualityClaim", r2(supplierQualityClaim));
         out.put("crewTotalDeduction", r2(totalDeduction));
-        out.put("visaTotalClaim", r2(totalClaim));
+        out.put("contractTotalCost", r2(companyContractCost));
+        out.put("visaMaterialTotal", r2(companyVisaCost));
+        out.put("visaLaborTotal", r2(companyVisaLabor));
+        out.put("visaTotalCost", r2(companyVisaCost + companyVisaLabor));
+        out.put("reworkMaterialTotal", r2(companyReworkCost));
+        out.put("reworkLaborTotal", r2(companyReworkLabor));
+        out.put("reworkTotalCost", r2(companyReworkCost + companyReworkLabor));
+        out.put("projectBearTotalCost", r2(companyBearCost));
+        out.put("visaTotalClaim", r2(visaLedgerTotal));
         out.put("suppliers", supplierRows);
         out.put("crews", crewRows);
+        out.put("supplements", supplementRows);
         out.put("visas", visaRows);
         return out;
     }

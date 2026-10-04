@@ -12,12 +12,14 @@ export const ROLE_LABEL = {
 
 export const STATUS_LABEL = {
   DRAFT: '草稿', SUBMITTED: '待处理', ISSUED: '已发料', REJECTED: '已驳回',
-  CONFIRMED: '已确认', CLAIMED: '已索赔', COUNTING: '盘点中', ADJUSTED: '已调账'
+  CONFIRMED: '已确认', CLAIMED: '已索赔', COUNTING: '盘点中', ADJUSTED: '已调账',
+  APPROVED: '已审核·待发料'
 }
 export const STATUS_TONE = {
   DRAFT: 'gray', SUBMITTED: 'amber', ISSUED: 'green', REJECTED: 'red',
   CONFIRMED: 'green', CLAIMED: 'blue', COUNTING: 'amber', ADJUSTED: 'blue',
-  PASSED: 'green', PENDING: 'amber', FAILED: 'red', CONDITIONAL: 'blue'
+  PASSED: 'green', PENDING: 'amber', FAILED: 'red', CONDITIONAL: 'blue',
+  APPROVED: 'blue'
 }
 
 export const QC_LABEL = { PENDING: '待检', PASSED: '合格', FAILED: '不合格', CONDITIONAL: '让步接收' }
@@ -32,6 +34,10 @@ export const RETURN_REASON = {
   SPEC_WRONG: '规格领错', SURPLUS: '临时追加多余', CHANGE: '施工变更', OTHER: '其他'
 }
 export const CHANGE_TYPE = { DESIGN: '设计变更', CONSTRUCTION: '施工变更', OWNER: '业主要求' }
+export const COST_BEARING = {
+  VISA: '可向甲方签证', CREW: '施工返工(班组承担)', COMPANY: '项目承担'
+}
+export const COST_BEARING_TONE = { VISA: 'blue', CREW: 'red', COMPANY: 'gray' }
 export const CONDITION = { GOOD: '完好可再发', DAMAGED: '损坏(班组责任)' }
 export const CAUSE_LABEL = {
   DESIGN: '设计变更', CONSTRUCTION: '施工错误', STORAGE: '保管不当', QUALITY: '供应商质量', OTHER: '其他'

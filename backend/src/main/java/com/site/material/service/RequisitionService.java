@@ -25,16 +25,19 @@ public class RequisitionService {
     private final ProjectBudgetRepository budgetRepo;
     private final MaterialRepository materialRepo;
     private final CrewRepository crewRepo;
+    private final SupplementService supplementService;
     private final CodeGenerator codes;
 
     public RequisitionService(RequisitionRepository reqRepo, MaterialBatchRepository batchRepo,
                               ProjectBudgetRepository budgetRepo, MaterialRepository materialRepo,
-                              CrewRepository crewRepo, CodeGenerator codes) {
+                              CrewRepository crewRepo, SupplementService supplementService,
+                              CodeGenerator codes) {
         this.reqRepo = reqRepo;
         this.batchRepo = batchRepo;
         this.budgetRepo = budgetRepo;
         this.materialRepo = materialRepo;
         this.crewRepo = crewRepo;
+        this.supplementService = supplementService;
         this.codes = codes;
     }
 
@@ -95,7 +98,8 @@ public class RequisitionService {
             row.put("alreadyIssued", MasterDataService.round(alreadyIssued));
             row.put("onHandQty", MasterDataService.round(onHand));
             row.put("stockEnough", onHand + 1e-9 >= it.getApplyQty());
-            row.put("overBudget", budgetQty > 0 && alreadyIssued + it.getApplyQty() > budgetQty + 1e-9);
+            row.put("overBudget", r.getSupplementId() == null
+                    && budgetQty > 0 && alreadyIssued + it.getApplyQty() > budgetQty + 1e-9);
             row.put("batches", batches.stream().map(b -> Map.of(
                     "batchId", b.getId(), "batchNo", b.getBatchNo(),
                     "onHand", b.onHand(), "unitPrice", b.getUnitPrice(),
@@ -161,7 +165,9 @@ public class RequisitionService {
                             r.getBuilding(), r.getProcess(), item.getMaterialId()).stream()
                     .filter(b -> b.getCrewId() == null || b.getCrewId().equals(r.getCrewId()))
                     .mapToDouble(ProjectBudget::getBudgetQty).sum();
-            if (budgetQty > 0 && already + in.issuedQty() > budgetQty + 1e-9 && !r.isUrgent()) {
+            // 变更追加领料已由项目经理按变更审核，不再按原预算拦截超预算
+            if (r.getSupplementId() == null
+                    && budgetQty > 0 && already + in.issuedQty() > budgetQty + 1e-9 && !r.isUrgent()) {
                 warnings.add("材料 " + item.getMaterialId() + " 累计领用已超预算，需补办审批");
             }
         }
@@ -173,6 +179,8 @@ public class RequisitionService {
             r.setRemark(req.remark());
         }
         reqRepo.save(r);
+        // 变更追加领料发料完成：回写追加申请，新增材料即与变更编号完成绑定
+        supplementService.markIssued(r.getSupplementId());
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("requisition", view(r));
         out.put("warnings", warnings);
@@ -247,6 +255,9 @@ public class RequisitionService {
         m.put("applyTime", r.getApplyTime());
         m.put("issueTime", r.getIssueTime());
         m.put("remark", r.getRemark());
+        m.put("supplementId", r.getSupplementId());
+        m.put("visaId", r.getVisaId());
+        m.put("costBearing", r.getCostBearing());
         m.put("items", items);
         m.put("totalAmount", MasterDataService.round(items.stream()
                 .mapToDouble(x -> (double) x.get("amount")).sum()));

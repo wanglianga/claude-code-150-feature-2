@@ -104,4 +104,25 @@ public final class Requests {
     public record CrewRequest(@NotBlank String name, String leader, String trade) {}
 
     public record GenerateSettlementRequest(String period, Long crewId) {}
+
+    public record SupplementItemIn(@NotNull Long materialId,
+                                   @NotNull @PositiveOrZero Double applyQty,
+                                   String usage) {}
+
+    public record SupplementRequest(
+            @NotNull Long visaId,
+            @NotNull Long crewId,
+            @NotBlank String building,
+            String area,
+            @NotBlank String process,
+            String drawingNo,
+            String reason,
+            @NotBlank String costBearing,
+            @PositiveOrZero Double laborCost,
+            @NotNull List<SupplementItemIn> items) {}
+
+    /** PM 审核：approved=false 驳回；true 通过并按 costBearing 判定成本承担方 */
+    public record SupplementReviewRequest(boolean approved,
+                                          String costBearing,
+                                          String reviewRemark) {}
 }

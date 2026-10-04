@@ -57,6 +57,9 @@ public class ChangeVisa {
     @Column(nullable = false, length = 16)
     private String status = "DRAFT";
 
+    /** 绑定的变更追加领料申请（追加领料通过后回填，材料成本随之进入索赔清单） */
+    private Long supplementId;
+
     private String applicant;
     private String confirmer;
     private LocalDateTime createdTime;
